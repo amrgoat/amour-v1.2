@@ -81,6 +81,72 @@ def _short(text: str, limit: int = 90) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _is_emoji_field(value: str) -> bool:
+    """True when a menu line's first field is an emoji rather than a label."""
+    value = value.strip()
+    if not value:
+        return False
+    if value.startswith("<") and value.endswith(">"):  # <:name:id> / <a:name:id>
+        return True
+    return not any(char.isalnum() for char in value)
+
+
+def _parse_menu_options(raw: str) -> list[dict[str, Any]]:
+    """Parse the builder's one-option-per-line menu syntax.
+
+    Accepted forms::
+
+        Label
+        Label | Description
+        Emoji | Label
+        Emoji | Label | Description
+    """
+    options: list[dict[str, Any]] = []
+    for line in (raw or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+
+        parts = [part.strip() for part in line.split("|")]
+        emoji = None
+        description = ""
+        if len(parts) >= 2 and _is_emoji_field(parts[0]):
+            emoji, label = parts[0], parts[1]
+            description = " | ".join(parts[2:]).strip()
+        elif len(parts) >= 3 and not parts[0]:
+            label = parts[1]
+            description = " | ".join(parts[2:]).strip()
+        elif len(parts) >= 2:
+            label = parts[0]
+            description = " | ".join(parts[1:]).strip()
+        else:
+            label = line
+
+        options.append(
+            {
+                "label": label,
+                "description": description or None,
+                "emoji": emoji,
+            }
+        )
+    return options
+
+
+def _menu_options_text(options: list[dict[str, Any]]) -> str | None:
+    """Render stored options back into the modal's line format."""
+    if not options:
+        return None
+    lines: list[str] = []
+    for option in options:
+        bits = [option["label"]]
+        if option.get("description"):
+            bits.append(option["description"])
+        if option.get("emoji"):
+            bits.insert(0, option["emoji"])
+        lines.append(" | ".join(bits))
+    return "\n".join(lines)
+
+
 def _parse_role_ids(raw: str) -> list[int]:
     ids: list[int] = []
     for token in re.split(r"[,\s]+", raw or ""):
@@ -229,6 +295,93 @@ class GalleryBlockModal(_BuilderModal):
         except CV2Error as exc:
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
+        if self.index is None:
+            self.builder.data["blocks"].append(block)
+        else:
+            self.builder.data["blocks"][self.index] = block
+        await self._finish(interaction)
+
+
+class MenuBlockModal(_BuilderModal):
+    def __init__(self, builder: "CV2Builder", index: int | None = None):
+        super().__init__(builder, title="Menu" if index is None else "Edit menu")
+        self.index = index
+        block = builder.data["blocks"][index] if index is not None else {}
+        multi = int(block.get("max_values", 1) or 1) > 1
+
+        self.placeholder_input = ui.TextInput(
+            default=block.get("placeholder"),
+            placeholder="Pick a role…",
+            max_length=150,
+            required=False,
+        )
+        self.options_input = ui.TextInput(
+            style=discord.TextStyle.paragraph,
+            default=_menu_options_text(block.get("options", [])),
+            placeholder="🎉 | Giveaway | Get pinged for events\n🛠 | Support | Open a ticket",
+            max_length=4000,
+            required=True,
+        )
+        self.mode = ui.Select(
+            placeholder="How many options can be picked?",
+            options=[
+                discord.SelectOption(
+                    label="One option",
+                    value="one",
+                    description="Standard dropdown",
+                    default=not multi,
+                ),
+                discord.SelectOption(
+                    label="Several options",
+                    value="many",
+                    description="Pick more than one at a time",
+                    default=multi,
+                ),
+            ],
+        )
+        self.add_item(
+            ui.Label(text="Placeholder (optional)", component=self.placeholder_input)
+        )
+        self.add_item(
+            ui.Label(
+                text="Options — one per line",
+                description="emoji | label | description · the emoji and description are optional",
+                component=self.options_input,
+            )
+        )
+        self.add_item(ui.Label(text="Selection mode", component=self.mode))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not await self._author_ok(interaction):
+            return
+
+        options = _parse_menu_options(self.options_input.value)
+        if not options:
+            await interaction.response.send_message(
+                "Add at least one option.", ephemeral=True
+            )
+            return
+
+        multi = bool(self.mode.values) and self.mode.values[0] == "many"
+        existing = (
+            self.builder.data["blocks"][self.index] if self.index is not None else {}
+        )
+        try:
+            block = normalize_block(
+                {
+                    "type": "menu",
+                    "id": existing.get("id"),
+                    "placeholder": self.placeholder_input.value.strip() or None,
+                    "min_values": 1,
+                    "max_values": len(options) if multi else 1,
+                    "disabled": existing.get("disabled", False),
+                    "options": options,
+                }
+            )
+        except CV2Error as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+
         if self.index is None:
             self.builder.data["blocks"].append(block)
         else:
@@ -472,7 +625,7 @@ class BlockActionsView(ui.View):
         self.index = index
         kind = builder.data["blocks"][index]["type"]
 
-        if kind in ("text", "section", "gallery"):
+        if kind in ("text", "section", "gallery", "menu"):
             edit = ui.Button(label="Edit", style=discord.ButtonStyle.primary)
             edit.callback = self.edit_block
             self.add_item(edit)
@@ -552,6 +705,8 @@ class BlockActionsView(ui.View):
             await interaction.response.send_modal(SectionBlockModal(self.builder, self.index))
         elif kind == "gallery":
             await interaction.response.send_modal(GalleryBlockModal(self.builder, self.index))
+        elif kind == "menu":
+            await interaction.response.send_modal(MenuBlockModal(self.builder, self.index))
 
     async def remove_block(self, interaction: discord.Interaction):
         self.builder.data["blocks"].pop(self.index)
@@ -629,6 +784,11 @@ class CV2Builder(ui.LayoutView):
                 discord.SelectOption(
                     label="Button", value="button", description="Link or role/action button"
                 ),
+                discord.SelectOption(
+                    label="Menu",
+                    value="menu",
+                    description="Dropdown with emoji + description options",
+                ),
                 discord.SelectOption(label="Accent color", value="accent"),
                 discord.SelectOption(label="Clear all blocks", value="clear"),
             ],
@@ -700,6 +860,8 @@ class CV2Builder(ui.LayoutView):
             await interaction.response.send_modal(GalleryBlockModal(self))
         elif choice == "button":
             await interaction.response.send_modal(ButtonModal(self))
+        elif choice == "menu":
+            await interaction.response.send_modal(MenuBlockModal(self))
         elif choice == "accent":
             await interaction.response.send_modal(AccentModal(self))
         elif choice == "separator":
@@ -1131,11 +1293,74 @@ class CV2Messages(commands.Cog):
             else f"{TICK} Updated `{name}`."
         )
 
+    async def handle_menu_select(
+        self, interaction: discord.Interaction, custom_id: str
+    ) -> None:
+        """Acknowledge a CV2 dropdown selection.
+
+        Menus are display components: they have no bot-side effect, so the
+        selection is confirmed privately instead of staying unanswered (which
+        Discord would show as "This interaction failed").
+        """
+        parts = custom_id.split(":")
+        if len(parts) != 3:
+            return
+        _, template_id, menu_id = parts
+        try:
+            template_id = int(template_id)
+        except ValueError:
+            return
+
+        values = list((interaction.data or {}).get("values") or [])
+        if not values:
+            return
+
+        row = await get_template_by_id(template_id, interaction.guild_id)
+        if row is None:
+            await interaction.response.send_message(
+                "This layout no longer exists, so its menu is inactive.", ephemeral=True
+            )
+            return
+
+        menu = None
+        for block in row["data"].get("blocks", []):
+            if block.get("type") == "menu" and block.get("id") == menu_id:
+                menu = block
+                break
+
+        if menu is None:
+            await interaction.response.send_message(
+                "That menu is no longer part of this layout.", ephemeral=True
+            )
+            return
+
+        picked = [
+            option for option in menu["options"] if option.get("value") in values
+        ][:1 if menu.get("max_values", 1) == 1 else None]
+        if not picked:
+            await interaction.response.send_message(
+                "That option is no longer part of this layout.", ephemeral=True
+            )
+            return
+
+        if len(picked) == 1:
+            note = f"You picked **{picked[0]['label']}**"
+            if picked[0].get("description"):
+                note += f" — {picked[0]['description']}"
+        else:
+            note = "You picked " + ", ".join(f"**{o['label']}**" for o in picked)
+        await interaction.response.send_message(note, ephemeral=True)
+
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
         if interaction.type is not discord.InteractionType.component:
             return
         custom_id = (interaction.data or {}).get("custom_id") or ""
+
+        if custom_id.startswith("cv2m:"):
+            await self.handle_menu_select(interaction, custom_id)
+            return
+
         if not custom_id.startswith("cv2:"):
             return
 

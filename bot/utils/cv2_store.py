@@ -14,8 +14,20 @@ Schema (version 1)::
             {"type": "separator", "divider": true, "spacing": "small"},
             {"type": "section", "text": ["..."], "thumbnail": "https://..."},
             {"type": "gallery", "items": ["https://...", "..."]},
-            {"type": "row", "buttons": [BUTTON, ...]}
+            {"type": "row", "buttons": [BUTTON, ...]},
+            {"type": "menu", "id": "e5f6a7b8", "placeholder": "Pick a role…",
+             "min_values": 1, "max_values": 1, "disabled": false,
+             "options": [OPTION, ...]}     # at most 25
         ]
+    }
+
+OPTION::
+
+    {
+        "label": "Giveaway",            # shown in the dropdown
+        "value": "giveaway",            # returned on selection, unique per menu
+        "description": "Get pinged…" | null,
+        "emoji": "<:name:123> | 🎉 | null"
     }
 
 BUTTON::
@@ -66,8 +78,13 @@ MAX_GALLERY_ITEMS = 10
 MAX_TEXT = 4000
 MAX_LABEL = 80
 MAX_MESSAGE = 2000
+MAX_MENU_OPTIONS = 25
+MAX_OPTION_LABEL = 100
+MAX_OPTION_DESCRIPTION = 100
+MAX_OPTION_VALUE = 100
+MAX_PLACEHOLDER = 150
 
-BLOCK_TYPES = ("text", "separator", "section", "gallery", "row")
+BLOCK_TYPES = ("text", "separator", "section", "gallery", "row", "menu")
 
 ACTION_TYPES = (
     "role_add",
@@ -264,6 +281,36 @@ def normalize_button(button: Any) -> dict[str, Any]:
     }
 
 
+def normalize_menu_option(option: Any) -> dict[str, Any]:
+    if not isinstance(option, dict):
+        raise CV2Error("A menu option must be an object.")
+
+    label = _text(option.get("label"), "Option label", limit=MAX_OPTION_LABEL)
+
+    description = option.get("description")
+    if description is not None and str(description).strip():
+        description = str(description).strip()
+        if len(description) > MAX_OPTION_DESCRIPTION:
+            raise CV2Error(
+                f"Option descriptions can hold at most {MAX_OPTION_DESCRIPTION} characters."
+            )
+    else:
+        description = None
+
+    # The value is what Discord sends back; default it to the label so a menu
+    # written by hand only needs labels.
+    value = str(option.get("value") or label).strip() or label
+    if len(value) > MAX_OPTION_VALUE:
+        raise CV2Error(f"Option values can hold at most {MAX_OPTION_VALUE} characters.")
+
+    return {
+        "label": label,
+        "value": value,
+        "description": description,
+        "emoji": _parse_emoji(option.get("emoji")),
+    }
+
+
 def normalize_block(block: Any) -> dict[str, Any]:
     if not isinstance(block, dict):
         raise CV2Error("A block must be an object.")
@@ -311,6 +358,54 @@ def normalize_block(block: Any) -> dict[str, Any]:
             "type": "section",
             "text": texts,
             "thumbnail": _media(thumbnail, "Section thumbnail") if thumbnail else None,
+        }
+
+    if kind == "menu":
+        raw_options = block.get("options") or []
+        if not isinstance(raw_options, list):
+            raise CV2Error("Menu options must be a list.")
+        options = [normalize_menu_option(option) for option in raw_options]
+        if not options:
+            raise CV2Error("A menu needs at least one option.")
+        if len(options) > MAX_MENU_OPTIONS:
+            raise CV2Error(f"A menu can hold at most {MAX_MENU_OPTIONS} options.")
+
+        # Discord requires unique values, so a repeated label gets a numeric suffix.
+        seen: set[str] = set()
+        for option in options:
+            value = option["value"]
+            suffix = 2
+            while value in seen:
+                tail = f"_{suffix}"
+                value = option["value"][: MAX_OPTION_VALUE - len(tail)] + tail
+                suffix += 1
+            option["value"] = value
+            seen.add(value)
+
+        placeholder = _text(
+            block.get("placeholder") or "",
+            "Menu placeholder",
+            limit=MAX_PLACEHOLDER,
+            allow_empty=True,
+        )
+
+        max_values = _int(block.get("max_values", 1), "Menu max choices")
+        if not 1 <= max_values <= len(options):
+            raise CV2Error(
+                f"A menu can allow between 1 and {len(options)} choice(s)."
+            )
+        min_values = _int(block.get("min_values", 1), "Menu min choices")
+        if not 0 <= min_values <= max_values:
+            min_values = 1
+
+        return {
+            "type": "menu",
+            "id": str(block.get("id") or new_button_id()),
+            "placeholder": placeholder or None,
+            "min_values": min_values,
+            "max_values": max_values,
+            "disabled": bool(block.get("disabled", False)),
+            "options": options,
         }
 
     raw_buttons = block.get("buttons") or []
@@ -364,6 +459,8 @@ def _component_count(data: dict[str, Any]) -> int:
             count += 1 + len(block["items"])
         elif kind == "row":
             count += 1 + len(block["buttons"])
+        elif kind == "menu":
+            count += 2  # action row + the select itself
         else:
             count += 1
     return count
@@ -442,6 +539,32 @@ def _build_block(block: dict[str, Any], placeholders, template_id: int | None):
         accessory = ui.Thumbnail(render_text(block["thumbnail"], placeholders))
         return ui.Section(*texts, accessory=accessory)
 
+    if kind == "menu":
+        options = [
+            discord.SelectOption(
+                label=render_text(option["label"], placeholders),
+                value=option["value"],
+                description=render_text(option["description"], placeholders)
+                if option["description"]
+                else None,
+                emoji=option["emoji"],
+            )
+            for option in block["options"]
+        ]
+        # A preview has no saved template to resolve, so the menu is shown inert.
+        return ui.ActionRow(
+            ui.Select(
+                placeholder=render_text(block["placeholder"], placeholders)
+                if block["placeholder"]
+                else None,
+                min_values=block["min_values"],
+                max_values=block["max_values"],
+                options=options,
+                custom_id=f"cv2m:{template_id or 0}:{block['id']}",
+                disabled=block["disabled"] or template_id is None,
+            )
+        )
+
     buttons = [_build_button(button, placeholders, template_id) for button in block["buttons"]]
     return ui.ActionRow(*buttons)
 
@@ -495,6 +618,9 @@ def describe_block(block: dict[str, Any]) -> str:
         return f"Section · {block['text'][0].replace(chr(10), ' ')[:50]}{extra}"
     if kind == "gallery":
         return f"Gallery · {len(block['items'])} image(s)"
+    if kind == "menu":
+        labels = ", ".join(option["label"] for option in block["options"][:3])
+        return f"Menu · {len(block['options'])} option(s) · {labels[:40]}"
     return f"Buttons · {len(block['buttons'])} button(s)"
 
 

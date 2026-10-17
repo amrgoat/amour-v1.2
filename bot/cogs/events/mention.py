@@ -1,12 +1,14 @@
-from utils.branding import bot_invite, bot_name, support_link, user_link
+from utils.branding import bot_invite, bot_name, support_link
 from utils import getConfig
-from utils.config import OWNER_IDS, OWNER_NAME
 import discord
 from utils.emoji import ARROWRED, CODEBASE, HEART3, INDEX, ZYROXLINKS
 from discord.ui import LayoutView, TextDisplay, Separator, Container, ActionRow, Select
 from discord.ext import commands
 from utils.Tools import get_ignore_data
 import aiosqlite
+
+# Developer credit for the "Developer Info" tab. Plain text — edit this line only.
+DEVELOPER_CREDIT = "[amrcooked](https://discord.com/users/631428835405070347)"
 
 
 class MentionSelectView(LayoutView):
@@ -67,13 +69,7 @@ class MentionSelectView(LayoutView):
                 f"___Type `{self.prefix}help` for more information.___"
             )
         elif selected == "Developer Info":
-            # One plain masked link per owner: [name](https://discord.com/users/<id>)
-            single = len(OWNER_IDS) == 1
-            owners = ", ".join(
-                user_link(owner_id, OWNER_NAME if single else None)
-                for owner_id in OWNER_IDS
-            ) or "_No owners configured yet._"
-            content = f"Developed by {owners}"
+            content = f"Developed by {DEVELOPER_CREDIT}"
         elif selected == "Links":
             content = (
                 f"**[Invite {bot_name(self.bot)}]({bot_invite(self.bot)})**\n"

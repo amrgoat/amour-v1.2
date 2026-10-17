@@ -156,6 +156,8 @@ Builder and layout management need **Manage Server**; sending needs **Manage Mes
 - **Sections** — text with a thumbnail image.
 - **Image galleries** — up to 10 images.
 - **Buttons** — up to 5 per row, either native URL buttons or action buttons.
+- **Menus** — a dropdown with up to 25 options, each with its own emoji and an
+  optional description, single-select or multi-select.
 - A container **accent color**.
 
 Limits are enforced while editing: 20 blocks and 40 components per layout.
@@ -184,6 +186,19 @@ Behaviour, matching Discord's rules:
 
 Buttons keep working after a restart: they carry `cv2:<template id>:<button id>`
 custom IDs and a single interaction listener resolves them from the database.
+
+Menus are added from the builder's **Menu** block and written one option per line:
+
+```text
+🎉 | Giveaway | Get pinged when events start
+🛠 | Support | Open a ticket
+Announcements
+```
+
+The `emoji | label | description` form is flexible — the emoji and the description
+can both be left out. The builder shows the dropdown live, so the emoji, label and
+description can be checked before saving. Picking an option confirms the choice
+privately; menus are display components and run no bot action of their own.
 
 ### Welcome messages
 
