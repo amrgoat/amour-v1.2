@@ -34,7 +34,6 @@ from .commands.notify import NotifCommands
 from .commands.status import Status
 from .commands.np import NoPrefix
 from .commands.owner2 import Global
-from .commands.qr import QR
 from .commands.vanityroles import VanityRoles
 from .commands.messages import Messages
 from .commands.fastgreet import FastGreet
@@ -146,7 +145,6 @@ async def setup(bot: zyrox):
   await bot.add_cog(NoPrefix(bot))
   await bot.add_cog(Global(bot))
  # await bot.add_cog(Map(bot))
-  await bot.add_cog(QR(bot))
   await bot.add_cog(VanityRoles(bot))
   await bot.add_cog(Messages(bot))
   await bot.add_cog(TranslateCog(bot))
