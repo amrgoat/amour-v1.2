@@ -6,8 +6,6 @@ from colorama import Fore, Style, init
 from .commands.help import Help
 from .commands.general import General
 from .commands.welcome import Welcomer
-from .commands.fun import Fun
-from .commands.Games import Games
 from .commands.extra import Extra
 from .commands.owner import Owner
 from .commands.voice import Voice
@@ -27,11 +25,8 @@ from .commands.owner import Badges
 from .commands.autoresponder import AutoResponder
 from .commands.customrole import Customrole
 from .commands.autorole import AutoRole
-from .commands.logging import Logging
 from .commands.translate import TranslateCog
 from .commands.jail import Jail
-from .commands.slots import Slots
-from .commands.blackjack import Blackjack
 from .commands.autoreact import AutoReaction
 from .commands.stats import Stats
 from .commands.emergency import Emergency
@@ -45,14 +40,11 @@ from .commands.messages import Messages
 from .commands.fastgreet import FastGreet
 from .commands.counting import Counting
 from .commands.j2c import JoinToCreate
-from .commands.ai import AI 
 from .commands.dms import StaffDMCog
 from .commands.booster import Booster
 from .commands.leveling import Leveling
 from .commands.stickymessage import StickyMessage
 from .commands.verification import Verification
-from .commands.minecraft import Minecraft
-from .commands.encryption import encryption
 from .commands.calc import calculator
 from .commands.cv2 import CV2Messages
 from .commands.joindm import joindm
@@ -72,7 +64,6 @@ from .events.mention import Mention
 from .events.react import React
 from .events.autoreact import AutoReactListener
 #from .events.topgg import TopGG
-from .events.ai import AIResponses 
 from .events.stickymessage import StickyMessageListener
 
 ########-------HELP-------########
@@ -80,26 +71,20 @@ from .zyrox.extra import _extra
 from .zyrox.general import _general
 from .zyrox.moderation import _moderation
 #from .zyrox.inviteTracker import _inviteTracker
-from .zyrox.fun import _fun
-from .zyrox.games import _games
 from .zyrox.ignore import _ignore
 from .zyrox.server import _server
 from .zyrox.voice import _voice 
 from .zyrox.welcome import _welcome 
 from .zyrox.giveaway import _giveaway
 #from .axon.vanityroles import Vanityroles69999
-from .zyrox.logging import _logging
 from .zyrox.vanity import _vanity
 from .zyrox.inviteTracker import inviteTracker 
 from .zyrox.counting import _Counting
 from .zyrox.j2c import _J2C
-from .zyrox.ai import _ai
 from .zyrox.booster import __boost 
 from .zyrox.leveling import _leveling
 from .zyrox.sticky import _sticky
 from .zyrox.verify import _verify
-from .zyrox.encryption import _encrypt
-from .zyrox.mc import _mc
 from .zyrox.joindm import _joindm
 from .zyrox.birth import _birth
 
@@ -125,21 +110,19 @@ from utils.config import BotName
 
 async def setup(bot: zyrox):
   cogs_to_load = [
-        Help, General, Moderation, Welcomer, Fun, Games, Extra,
-        Voice, Owner, Customrole, afk, Embed, CV2Messages, Media, Ignore, Logging,
+        Help, General, Moderation, Welcomer, Extra,
+        Voice, Owner, Customrole, afk, Embed, CV2Messages, Media, Ignore,
         Invcrole, Steal, Timer,
-        Blacklist, Block, Badges, Blackjack, Slots, Guild, Errors, Autorole2, Autorole, greet, AutoResponder,
+        Blacklist, Block, Badges, Guild, Errors, Autorole2, Autorole, greet, AutoResponder,
         Mention, AutoRole, React,
-        Stats, Status, NoPrefix, AutoReaction, AutoReactListener, Ban, Unban, Mute, Unmute, Lock, Unlock, Hide, Unhide, Kick, Warn, Role, Message, Moderation, TopCheck, Snipe, Global, QR, VanityRoles, Messages, TranslateCog, FastGreet, Jail, inviteTracker,Counting,AI
+        Stats, Status, NoPrefix, AutoReaction, AutoReactListener, Ban, Unban, Mute, Unmute, Lock, Unlock, Hide, Unhide, Kick, Warn, Role, Message, Moderation, TopCheck, Snipe, Global, QR, VanityRoles, Messages, TranslateCog, FastGreet, Jail, inviteTracker,Counting
     ]
 
 
   await bot.add_cog(Help(bot))
   await bot.add_cog(General(bot))
   await bot.add_cog(Welcomer(bot))
-  await bot.add_cog(Fun(bot))
   await bot.add_cog(Tracking(bot))
-  await bot.add_cog(Games(bot))
   await bot.add_cog(Extra(bot))
   await bot.add_cog(Voice(bot))
   await bot.add_cog(Owner(bot))
@@ -157,15 +140,12 @@ async def setup(bot: zyrox):
   await bot.add_cog(Blacklist(bot))
   await bot.add_cog(Block(bot))
   await bot.add_cog(Badges(bot))
-  await bot.add_cog(Slots(bot))
-  await bot.add_cog(Blackjack(bot))
   await bot.add_cog(Stats(bot))
   await bot.add_cog(Emergency(bot))
   await bot.add_cog(Status(bot))
   await bot.add_cog(NoPrefix(bot))
   await bot.add_cog(Global(bot))
  # await bot.add_cog(Map(bot))
-  await bot.add_cog(Logging(bot))
   await bot.add_cog(QR(bot))
   await bot.add_cog(VanityRoles(bot))
   await bot.add_cog(Messages(bot))
@@ -173,13 +153,10 @@ async def setup(bot: zyrox):
   await bot.add_cog(FastGreet(bot))
   await bot.add_cog(Jail(bot))
   await bot.add_cog(JoinToCreate(bot))
-  await bot.add_cog(AI(bot))
   await bot.add_cog(StaffDMCog(bot))
   await bot.add_cog(Leveling(bot))
   await bot.add_cog(StickyMessage(bot))
   await bot.add_cog(Verification(bot))
-  await bot.add_cog(Minecraft(bot))
-  await bot.add_cog(encryption(bot))
   await bot.add_cog(calculator(bot))
   await bot.add_cog(joindm(bot))
   await bot.add_cog(Birthdays(bot))
@@ -190,26 +167,20 @@ async def setup(bot: zyrox):
   await bot.add_cog(_extra(bot))
   await bot.add_cog(_general(bot))
   await bot.add_cog(_moderation(bot))
-  await bot.add_cog(_fun(bot))
-  await bot.add_cog(_games(bot))
   await bot.add_cog(_ignore(bot))
   await bot.add_cog(_server(bot))
   await bot.add_cog(_voice(bot))   
   await bot.add_cog(_welcome(bot))
   await bot.add_cog(_giveaway(bot))
-  await bot.add_cog(_logging(bot))
   await bot.add_cog(_vanity(bot))
   await bot.add_cog(inviteTracker(bot))
   await bot.add_cog(Counting(bot))
   await bot.add_cog(_Counting(bot))
   await bot.add_cog(_J2C(bot))
-  await bot.add_cog(_ai(bot))
   await bot.add_cog(__boost(bot))
   await bot.add_cog(_leveling(bot))
   await bot.add_cog(_sticky(bot))
   await bot.add_cog(_verify(bot))
-  await bot.add_cog(_encrypt(bot))
-  await bot.add_cog(_mc(bot))
   await bot.add_cog(_joindm(bot))
   await bot.add_cog(_birth(bot))
 
@@ -229,7 +200,6 @@ async def setup(bot: zyrox):
   await bot.add_cog(AutoReactListener(bot))
   await bot.add_cog(NotifCommands(bot))
   await bot.add_cog(StickyMessageListener(bot))
-  await bot.add_cog(AIResponses(bot))
 
 
 

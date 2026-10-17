@@ -27,14 +27,10 @@ gTTS
 langdetect
 deep-translator==1.11.4
 
-# ── Games / fun ───────────────────────────────────────────────────────────────
-chess
-mcstatus
-
 # ── AI features ───────────────────────────────────────────────────────────────
 openai
 duckduckgo-search==6.3.6
 # Optional extras — both are guarded imports, the related commands disable
 # themselves with a clear message when the package is absent.
-# google-generativeai   # Gemini path in cogs/commands/ai.py
+# google-generativeai   # optional Gemini image path
 # prodia                # legacy /imagine SDK; not available on PyPI

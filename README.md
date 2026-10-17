@@ -1,7 +1,7 @@
 # Discord Bot Base
 
-A feature-rich `discord.py` v2 bot: Components V2 message layouts, moderation, logging,
-giveaways, join-to-create voice, leveling, invites, 12+ mini-games and an AI assistant.
+A feature-rich `discord.py` v2 bot: Components V2 message layouts, moderation,
+giveaways, join-to-create voice, leveling, invites and self-service role panels.
 
 This is a stripped base built from the ZyroX CV2 layout, with four things removed:
 
@@ -293,10 +293,9 @@ bot/
 │   ├── greet_render.py welcome/join rendering for all three greet types
 │   ├── branding.py     bot identity helpers
 │   └── …               emojis, paginators, config
-├── games/              standalone game engines
 ├── db/                 SQLite databases (created at runtime)
 ├── lang/               translations
-├── data/               game assets, cards, fonts
+├── data/               image assets (status cards)
 └── config.yml          AI/presence configuration
 ```
 
