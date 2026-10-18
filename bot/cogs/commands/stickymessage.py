@@ -39,83 +39,6 @@ class StickyMessage(commands.Cog):
             """)
             await db.commit()
 
-    @commands.Cog.listener()
-    async def on_message(self, message: discord.Message):
-        if not message.guild or (message.author.bot and message.author.id != self.bot.user.id):
-            return
-
-        async with aiosqlite.connect("db/stickymessages.db") as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                "SELECT * FROM sticky_messages WHERE channel_id = ? AND enabled = 1",
-                (message.channel.id,)
-            )
-            sticky_data = await cursor.fetchone()
-
-        if not sticky_data:
-            return
-
-        if sticky_data['ignore_bots'] and message.author.bot:
-            return
-            
-        if sticky_data['ignore_commands']:
-            prefixes = await self.bot.get_prefix(message)
-            if isinstance(prefixes, str):
-                prefixes = [prefixes]
-            if any(message.content.startswith(p) for p in prefixes):
-                return
-
-        new_count = sticky_data['current_count'] + 1
-        if new_count < sticky_data['trigger_count']:
-            async with aiosqlite.connect("db/stickymessages.db") as db:
-                await db.execute(
-                    "UPDATE sticky_messages SET current_count = ? WHERE id = ?",
-                    (new_count, sticky_data['id'])
-                )
-                await db.commit()
-            return
-
-        async with aiosqlite.connect("db/stickymessages.db") as db:
-            await db.execute("UPDATE sticky_messages SET current_count = 0 WHERE id = ?", (sticky_data['id'],))
-            await db.commit()
-
-        await asyncio.sleep(sticky_data['delay_seconds'])
-
-        if sticky_data['last_message_id']:
-            try:
-                last_msg = await message.channel.fetch_message(sticky_data['last_message_id'])
-                await last_msg.delete()
-            except discord.NotFound:
-                pass
-
-        content = None
-        embed = None
-        delete_after = sticky_data['auto_delete_after'] if sticky_data['auto_delete_after'] > 0 else None
-
-        if sticky_data['message_type'] == 'plain':
-            content = sticky_data['message_content']
-        else:
-            try:
-                embed_data = json.loads(sticky_data['embed_data'])
-                embed = discord.Embed(
-                    title=embed_data.get('title'),
-                    description=embed_data.get('description'),
-                    color=RED_THEME_COLOR
-                )
-                if footer := embed_data.get('footer'):
-                    embed.set_footer(text=footer)
-            except (json.JSONDecodeError, ValueError):
-                embed = discord.Embed(description="Error: Could not decode embed data.", color=RED_THEME_COLOR)
-
-        new_sticky = await message.channel.send(content=content, embed=embed, delete_after=delete_after)
-
-        async with aiosqlite.connect("db/stickymessages.db") as db:
-            await db.execute(
-                "UPDATE sticky_messages SET last_message_id = ? WHERE id = ?",
-                (new_sticky.id, sticky_data['id'])
-            )
-            await db.commit()
-
     @commands.group(aliases=['sticky', 'sm'], invoke_without_command=True)
     @commands.has_permissions(manage_messages=True)
     async def stickymessage(self, ctx: commands.Context):
@@ -132,7 +55,17 @@ class StickyMessage(commands.Cog):
                 embed = discord.Embed(title="Setup Error", description=f"A sticky message already exists in {channel.mention}.", color=RED_THEME_COLOR)
                 return await ctx.send(embed=embed)
         
-        embed = discord.Embed(title="Sticky Message Setup", description=f"Choose the message type for {channel.mention}:", color=RED_THEME_COLOR)
+        embed = discord.Embed(
+            title="Sticky Message Setup",
+            description=(
+                f"Sticky messages for {channel.mention} are plain text and support "
+                "placeholders like `{user}`, `{user_mention}` and `{server_name}`.\n\n"
+                "Attach a saved embed with `{embed:name}` or a Components V2 layout "
+                f"with `{{cv2:name}}`. Create them with `{ctx.prefix}embed build` and "
+                f"`{ctx.prefix}cv2 build`."
+            ),
+            color=RED_THEME_COLOR,
+        )
         await ctx.send(embed=embed, view=StickySetupView(ctx, channel))
 
     @stickymessage.command(name='remove', aliases=['delete', 'del'])
@@ -224,10 +157,6 @@ class StickySetupView(AuthorOnlyView):
     async def plain_text(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(PlainTextModal(self.ctx, self.channel))
 
-    @discord.ui.button(label='Embed', style=discord.ButtonStyle.secondary, emoji='📋')
-    async def embed_message(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(EmbedModal(self.ctx, self.channel))
-
     @discord.ui.button(label='Cancel', style=discord.ButtonStyle.danger)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = discord.Embed(title="Cancelled", description="Sticky message setup has been cancelled.", color=RED_THEME_COLOR)
@@ -256,40 +185,6 @@ class PlainTextModal(discord.ui.Modal, title='Plain Text Sticky Message'):
             await db.commit()
 
         embed = discord.Embed(title="Sticky Created", description=f"Successfully created a plain text sticky in {self.channel.mention}.", color=RED_THEME_COLOR)
-        await interaction.response.edit_message(embed=embed, view=None)
-
-class EmbedModal(discord.ui.Modal, title='Embed Sticky Message'):
-    def __init__(self, ctx: commands.Context, channel: discord.TextChannel):
-        super().__init__()
-        self.ctx = ctx
-        self.channel = channel
-
-    title = discord.ui.TextInput(label='Embed Title', required=False, max_length=256)
-    description = discord.ui.TextInput(label='Embed Description', style=discord.TextStyle.long, required=True, max_length=4000)
-    footer = discord.ui.TextInput(label='Embed Footer', required=False, max_length=2048)
-    delay_seconds = discord.ui.TextInput(label='Delay (seconds)', default='2', required=False, max_length=3)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            delay = int(self.delay_seconds.value or "2")
-        except ValueError:
-            delay = 2
-
-        embed_data = {
-            "title": self.title.value,
-            "description": self.description.value,
-            "color": f"#{RED_THEME_COLOR:06x}",
-            "footer": self.footer.value
-        }
-
-        async with aiosqlite.connect("db/stickymessages.db") as db:
-            await db.execute(
-                "INSERT INTO sticky_messages (guild_id, channel_id, message_type, embed_data, delay_seconds) VALUES (?, ?, ?, ?, ?)",
-                (self.ctx.guild.id, self.channel.id, 'embed', json.dumps(embed_data), delay)
-            )
-            await db.commit()
-        
-        embed = discord.Embed(title="Sticky Embed Created", description=f"Successfully created an embed sticky in {self.channel.mention}.", color=RED_THEME_COLOR)
         await interaction.response.edit_message(embed=embed, view=None)
 
 class StickyEditView(AuthorOnlyView):
@@ -344,18 +239,21 @@ class EditEmbedModal(discord.ui.Modal, title='Edit Embed Content'):
         self.channel = channel
         embed_data = json.loads(sticky_data['embed_data'])
         
-        self.title = discord.ui.TextInput(label='Embed Title', default=embed_data.get('title', ''), required=False, max_length=256)
-        self.description = discord.ui.TextInput(label='Embed Description', style=discord.TextStyle.long, default=embed_data.get('description', ''), required=True, max_length=4000)
-        self.footer = discord.ui.TextInput(label='Embed Footer', default=embed_data.get('footer', ''), required=False, max_length=2048)
+        # Never name these ``title``/``description``: ``Modal.title`` is the modal
+        # heading (a str), so a TextInput there would overwrite it and
+        # ``self.title.value`` would fail on submit.
+        self.title_input = discord.ui.TextInput(label='Embed Title', default=embed_data.get('title', ''), required=False, max_length=256)
+        self.description_input = discord.ui.TextInput(label='Embed Description', style=discord.TextStyle.long, default=embed_data.get('description', ''), required=True, max_length=4000)
+        self.footer_input = discord.ui.TextInput(label='Embed Footer', default=embed_data.get('footer', ''), required=False, max_length=2048)
 
-        self.add_item(self.title)
-        self.add_item(self.description)
-        self.add_item(self.footer)
+        self.add_item(self.title_input)
+        self.add_item(self.description_input)
+        self.add_item(self.footer_input)
 
     async def on_submit(self, interaction: discord.Interaction):
         embed_data = {
-            "title": self.title.value, "description": self.description.value,
-            "color": f"#{RED_THEME_COLOR:06x}", "footer": self.footer.value
+            "title": self.title_input.value, "description": self.description_input.value,
+            "color": f"#{RED_THEME_COLOR:06x}", "footer": self.footer_input.value
         }
         async with aiosqlite.connect("db/stickymessages.db") as db:
             await db.execute(

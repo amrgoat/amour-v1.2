@@ -216,7 +216,9 @@ class Media(commands.Cog):
                         "⚠️ You are blacklisted from using my commands due to spamming in the media channel. "
                         "If you believe this is a mistake, please reach out to the support server with proof."
                     )
-                    await message.channel.send(f"{message.author.mention}", view=CV2("You Have Been Blacklisted", desc))
+                    # Components V2 messages cannot carry plain content, so the
+                    # mention goes inside the container instead.
+                    await message.channel.send(view=CV2("You Have Been Blacklisted", f"{message.author.mention}\n\n{desc}"))
                     del self.infractions[message.author.id]
 
 async def setup(bot):

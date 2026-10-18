@@ -205,6 +205,7 @@ class HelpCommand(commands.HelpCommand):
             f"{cmd.short_doc if cmd.short_doc else ''}\n\u200b"
         )
         for cmd in group.commands
+        if not cmd.hidden
       ]
 
     count = len(group.commands)
@@ -235,7 +236,7 @@ class HelpCommand(commands.HelpCommand):
       f"> `{self.context.prefix}{cmd.qualified_name}`",
       f"-# Description : {cmd.short_doc if cmd.short_doc else ''}"
       f"\n\u200b",
-    ) for cmd in cog.get_commands()]
+    ) for cmd in cog.get_commands() if not cmd.hidden]
     paginator = Paginator(source=FieldPagePaginator(
       entries=entries,
       title=f"{BRAND_NAME}'s {cog.qualified_name.title()} ({len(cog.get_commands())})",

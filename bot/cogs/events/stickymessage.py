@@ -4,7 +4,7 @@ import json
 import asyncio
 from discord.ext import commands
 from utils.config import *
-from utils.variables import render, build_variables
+from utils.greet_render import GreetingError, send_greeting
 
 class StickyMessageListener(commands.Cog):
     def __init__(self, bot):
@@ -116,12 +116,20 @@ class StickyMessageListener(commands.Cog):
     async def send_sticky_message(self, channel, msg_type, msg_content, embed_data, author=None, guild=None):
         try:
             if msg_type == "plain" and msg_content:
-                variables = build_variables(
-                    user=author,
-                    guild=guild,
-                )
-                rendered = render(msg_content, variables, guild=guild)
-                return await channel.send(content=rendered)
+                # Same renderer as greet, so {embed:name} and {cv2:name} work in
+                # sticky messages too.
+                try:
+                    sent = await send_greeting(
+                        channel,
+                        guild=guild,
+                        member=author,
+                        channel=channel,
+                        welcome_type="simple",
+                        welcome_message=msg_content,
+                    )
+                except GreetingError:
+                    return None
+                return sent[0] if sent else None
 
             elif msg_type == "embed" and embed_data:
                 try:

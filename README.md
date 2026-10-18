@@ -202,20 +202,20 @@ privately; menus are display components and run no bot action of their own.
 
 ### Welcome messages
 
-Either run `greet setup` and pick **Components V2**, or point an existing setup at a
-saved layout:
+Welcome messages are a single text message. Run `greet setup`, enter the text, then
+set the destination and preview it:
 
 ```
-greet cv2 join-card
 greet channel #welcome
 greet test
 ```
 
-Welcome messages use the full variable list above, in text blocks and in image URLs,
-and they accept `{embed:name}` / `{cv2:name}` tokens. Layouts are re-rendered on every
-join, so role buttons inside a welcome card work like self-service roles, and
-`greet test` proves exactly what members will receive by going through the same code
-path as the join listener.
+The message uses the full variable list above and accepts `{embed:name}` /
+`{cv2:name}` tokens, so saved embeds and layouts are attached from the text instead of
+being picked as a separate message type. Layouts are re-rendered on every join, so
+role buttons inside a welcome card work like self-service roles, and `greet test`
+proves exactly what members will receive by going through the same code path as the
+join listener. Sticky messages (`sticky setup`) use the same text + token format.
 
 ### Using layouts from other cogs
 
@@ -242,9 +242,10 @@ knowing beyond that:
 gsetw <message id> <user id> [<user id2> ...]   # bot owner only
 ```
 
-It is gated by `utils.Tools.bot_owner_check()` rather than `commands.is_owner()`,
-which also lets a *guild* owner through — `gsetw` touches any server's giveaway, so
-only `OWNER_IDS` qualifies. Anyone else gets an "Owner Only" reply.
+It is hidden from `help` and gated by `utils.Tools.is_bot_owner()` rather than
+`commands.is_owner()`, which also lets a *guild* owner through — `gsetw` touches any
+server's giveaway, so only `OWNER_IDS` qualifies. Anyone else gets no response at all,
+so the command never advertises itself in a server.
 
 `gsetw` closes a **running** giveaway and declares the given users the winners — the
 message is edited to its ended state, the winners are congratulated, and the row is
@@ -290,7 +291,7 @@ bot/
 │   ├── embed_store.py  saved embeds         → db/embeds.db
 │   ├── cv2_store.py    saved CV2 layouts    → db/cv2.db
 │   ├── cv2_actions.py  CV2 button actions
-│   ├── greet_render.py welcome/join rendering for all three greet types
+│   ├── greet_render.py text/embed/CV2 rendering for greet and sticky messages
 │   ├── branding.py     bot identity helpers
 │   └── …               emojis, paginators, config
 ├── db/                 SQLite databases (created at runtime)

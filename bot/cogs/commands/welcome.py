@@ -81,27 +81,12 @@ class Welcomer(commands.Cog):
             if button.custom_id == "simple":
                 await interaction.message.delete()
                 await self.simple_setup(ctx)
-                
-            elif button.custom_id == "embed":
-                await interaction.message.delete()
-                await self.embed_setup(ctx)
-            elif button.custom_id == "cv2":
-                await interaction.message.delete()
-                await self.cv2_setup(ctx)
             elif button.custom_id == "cancel":
                 await interaction.message.delete()
 
-        button_simple = Button(label="Simple", style=discord.ButtonStyle.success, custom_id="simple")
+        button_simple = Button(label="Text message", style=discord.ButtonStyle.success, custom_id="simple")
         button_simple.callback = lambda interaction: option_callback(interaction, button_simple)
         options_view.add_item(button_simple)
-
-        button_embed = Button(label="Embed", style=discord.ButtonStyle.success, custom_id="embed")
-        button_embed.callback = lambda interaction: option_callback(interaction, button_embed)
-        options_view.add_item(button_embed)
-
-        button_cv2 = Button(label="Components V2", style=discord.ButtonStyle.primary, custom_id="cv2")
-        button_cv2.callback = lambda interaction: option_callback(interaction, button_cv2)
-        options_view.add_item(button_cv2)
 
         button_cancel = Button(label="Cancel", style=discord.ButtonStyle.danger, custom_id="cancel")
         button_cancel.callback = lambda interaction: option_callback(interaction, button_cancel)
@@ -109,27 +94,24 @@ class Welcomer(commands.Cog):
 
         embed = discord.Embed(
             title="Welcome Message Setup",
-            description="Choose the type of welcome message you want to create:",
+            description=(
+                "Welcome messages are plain text with placeholders such as "
+                "`{user}`, `{user_mention}`, `{server_name}` and `{member_count}`."
+            ),
             color=0xFF0000
         )
 
         embed.add_field(
-            name=" Simple",
-            value="Send a plain text welcome message. You can use placeholders to personalize it.\n\n",
-            inline=False
-        )
-        embed.add_field(
-            name=" Embed",
-            value="Send a welcome message in an embed format. You can customize the embed with a title, description, image, etc.",
-            inline=False
-        )
-        embed.add_field(
-            name=" Components V2",
-            value=f"Send a saved Components V2 layout. Build layouts with `{ctx.prefix}cv2 build`, then pick one here.",
+            name="Saved embeds and layouts",
+            value=(
+                f"Attach a saved embed with `{{embed:name}}` or a Components V2 "
+                f"layout with `{{cv2:name}}` inside the message. Create them with "
+                f"`{ctx.prefix}embed build` and `{ctx.prefix}cv2 build`."
+            ),
             inline=False
         )
 
-        embed.set_footer(text="Click the buttons below to choose the welcome message type.", icon_url=self.bot.user.display_avatar.url)
+        embed.set_footer(text="Click below to enter the message.", icon_url=self.bot.user.display_avatar.url)
         
 
         await ctx.send(embed=embed, view=options_view)
@@ -261,212 +243,6 @@ class Welcomer(commands.Cog):
             )
             for row in rows[:25]
         ]
-
-    async def cv2_setup(self, ctx):
-        rows = await list_templates(ctx.guild.id)
-        if not rows:
-            error = discord.Embed(
-                description=f"No Components V2 layouts saved yet. Create one with `{ctx.prefix}cv2 build` first.",
-                color=0xFF0000,
-            )
-            return await ctx.send(embed=error)
-
-        view = View(timeout=600)
-        select = Select(
-            placeholder="Choose a Components V2 layout",
-            options=self._cv2_options(rows),
-        )
-
-        async def select_callback(interaction: discord.Interaction):
-            if interaction.user != ctx.author:
-                await interaction.response.send_message(
-                    "You cannot interact with this setup.", ephemeral=True
-                )
-                return
-
-            row = await get_template(ctx.guild.id, select.values[0])
-            if row is None:
-                await interaction.response.send_message(
-                    "That layout no longer exists.", ephemeral=True
-                )
-                return
-
-            await self._set_welcome(ctx.guild.id, "cv2", "", {"template": row["name"]})
-            done = discord.Embed(
-                title=f"{TICK}> Components V2 welcome configured",
-                description=(
-                    f"Layout: `{row['name']}`\n\n"
-                    f"Set the destination with `{ctx.prefix}greet channel`, "
-                    f"then preview it with `{ctx.prefix}greet test`."
-                ),
-                color=0x2ECC71,
-            )
-            await interaction.response.edit_message(embed=done, view=None)
-
-        select.callback = select_callback
-        view.add_item(select)
-
-        await ctx.send(
-            embed=discord.Embed(
-                title="Components V2 welcome",
-                description=(
-                    "Pick a saved layout. Placeholders like `{user}`, "
-                    "`{server_name}` and `{user_avatar}` are filled in automatically."
-                ),
-                color=0xFF0000,
-            ),
-            view=view,
-        )
-
-    
-
-
-    async def embed_setup(self, ctx):
-        setup_view = View(timeout=600)
-        embed_data = {
-            "message": None,
-            "title": None,
-            "description": None,
-            "color": None,
-            "footer_text": None,
-            "footer_icon": None,
-            "author_name": None,
-            "author_icon": None,
-            "thumbnail": None,
-            "image": None,
-        }
-
-        def safe_format(text):
-            return self._safe_format(ctx, text)
-
-        async def update_preview():
-            stripped, note = self._template_note(embed_data["message"] or "")
-            content = safe_format(stripped) or "Message Content."
-            content += note
-            embed = discord.Embed(
-    title=safe_format(embed_data["title"]) or "",
-    description=safe_format(embed_data["description"]) or "```Customize your welcome embed, take help of variables.```",
-    color=discord.Color(embed_data["color"]) if embed_data["color"] else discord.Color(0x2f3136)
-            )
-
-            
-            if embed_data["footer_text"]:
-                embed.set_footer(text=safe_format(embed_data["footer_text"]), icon_url=safe_format(embed_data["footer_icon"]) or None)
-            if embed_data["author_name"]:
-                embed.set_author(name=safe_format(embed_data["author_name"]), icon_url=safe_format(embed_data["author_icon"]) or None)
-            if embed_data["thumbnail"]:
-                embed.set_thumbnail(url=safe_format(embed_data["thumbnail"]))
-            if embed_data["image"]:
-                embed.set_image(url=safe_format(embed_data["image"]))
-
-            await preview_message.edit(content="**Embed Preview:** " + content, embed=embed, view=setup_view)
-
-        preview_message = await ctx.send("Configuring embed welcome message...")
-
-        async def handle_selection(interaction: discord.Interaction):
-            if interaction.user != ctx.author:
-                await interaction.response.send_message("You cannot interact with this setup.", ephemeral=True)
-                return
-
-            selected_option = select_menu.values[0]
-            await interaction.response.defer()
-
-            try:
-                if selected_option == "message":
-                    await ctx.send("Enter the welcome message content:")
-                    msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author and m.channel == ctx.channel)
-                    embed_data["message"] = msg.content
-
-                elif selected_option == "title":
-                    await ctx.send("Enter the embed title:")
-                    msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author and m.channel == ctx.channel)
-                    embed_data["title"] = msg.content
-
-                elif selected_option == "description":
-                    await ctx.send("Enter the embed description:")
-                    msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author and m.channel == ctx.channel)
-                    embed_data["description"] = msg.content
-
-                elif selected_option == "color":
-                    await ctx.send("Enter a hex color (e.g., #3498db or 3498db):")
-                    msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author and m.channel == ctx.channel)
-                    color_code = msg.content.lstrip("#")
-                    if all(c in "0123456789abcdefABCDEF" for c in color_code) and len(color_code) in {3, 6}:
-                        embed_data["color"] = int(color_code.lstrip("#"), 16)
-                    else:
-                        await ctx.send("Invalid color code. Please enter a valid hex color.")
-
-                elif selected_option in ["footer_text", "footer_icon", "author_name", "author_icon", "thumbnail", "image"]:
-                    await ctx.send(f"Enter the URL or text for {selected_option.replace('_', ' ')}:")
-                    msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author and m.channel == ctx.channel)
-                    url_or_text = msg.content
-                    if selected_option in ["footer_icon", "author_icon", "thumbnail", "image"]:
-                        if url_or_text.startswith("http") or url_or_text in ["{user_avatar}", "{server_icon}"]:
-                            embed_data[selected_option] = url_or_text
-                        else:
-                            await ctx.send("Invalid URL. Please enter a valid image URL or a supported placeholder ({user_avatar} or {server_icon}).")
-                    else:
-                        embed_data[selected_option] = url_or_text
-
-                await update_preview()
-                await interaction.followup.send(f"{selected_option.capitalize()} updated.", ephemeral=True)
-            except asyncio.TimeoutError:
-                await ctx.send("You took too long to respond. Please try again.")
-            except Exception as e:
-                await ctx.send(f"An error occurred: {e}")
-
-        select_menu = Select(
-            placeholder="Choose an option to edit the Embed",
-            options=[
-                discord.SelectOption(label="Message Content", value="message"),
-                discord.SelectOption(label="Title", value="title"),
-                discord.SelectOption(label="Description", value="description"),
-                discord.SelectOption(label="Color", value="color"),
-                discord.SelectOption(label="Footer Text", value="footer_text"),
-                discord.SelectOption(label="Footer Icon", value="footer_icon"),
-                discord.SelectOption(label="Author Name", value="author_name"),
-                discord.SelectOption(label="Author Icon", value="author_icon"),
-                discord.SelectOption(label="Thumbnail", value="thumbnail"),
-                discord.SelectOption(label="Image", value="image")
-            ]
-        )
-        select_menu.callback = handle_selection
-        setup_view.add_item(select_menu)
-
-        async def submit_callback(interaction):
-            if interaction.user != ctx.author:
-                await interaction.response.send_message("You cannot interact with this setup.", ephemeral=True)
-                return
-            if not any(embed_data[key] for key in ["title", "description"]):
-                await interaction.response.send_message("Please provide at least a title or an description before submitting.", ephemeral=True)
-                return
-
-            await self._save_welcome_data(ctx.guild.id, "embed", embed_data["message"] or "", embed_data)
-            await interaction.response.send_message(f"{TICK}> Embed welcome message setup completed!")
-
-            for item in setup_view.children:
-                item.disabled = True
-            await preview_message.edit(view=setup_view)
-
-        submit_button = Button(label="Submit", style=discord.ButtonStyle.success)
-        submit_button.callback = submit_callback
-        setup_view.add_item(submit_button)
-        setup_view.add_item(VariableButton(ctx.author))
-
-        async def cancel_callback(interaction):
-            if interaction.user != ctx.author:
-                await interaction.response.send_message("You cannot interact with this setup.", ephemeral=True)
-                return
-            await preview_message.delete()
-            await interaction.response.send_message("Embed setup cancelled.", ephemeral=True)
-
-        cancel_button = Button(label="Cancel", style=discord.ButtonStyle.danger)
-        cancel_button.callback = cancel_callback
-        setup_view.add_item(cancel_button)
-
-        await update_preview()
-
-    
 
     @greet.command(name="reset", aliases=["disable"], help="Resets and deletes the current welcome configuration for the server.")
     @blacklist_check()
@@ -616,27 +392,6 @@ class Welcomer(commands.Cog):
         await ctx.send(embed=embed, view=generate_view(current_page))
 
 
-
-    @greet.command(name="cv2", help="Use a saved Components V2 layout for welcome messages.")
-    @blacklist_check()
-    @ignore_check()
-    @commands.has_permissions(administrator=True)
-    @commands.cooldown(1, 6, commands.BucketType.user)
-    @commands.max_concurrency(1, per=commands.BucketType.default, wait=False)
-    async def greet_cv2(self, ctx, *, name: str):
-        row = await get_template(ctx.guild.id, name)
-        if row is None:
-            error = discord.Embed(
-                description=f"No Components V2 layout named `{name}`. Use `{ctx.prefix}cv2 list`.",
-                color=0xFF0000,
-            )
-            return await ctx.send(embed=error)
-
-        await self._set_welcome(ctx.guild.id, "cv2", "", {"template": row["name"]})
-        await ctx.send(
-            f"{TICK}> Welcome messages now use the Components V2 layout `{row['name']}`. "
-            f"Set the channel with `{ctx.prefix}greet channel` if needed."
-        )
 
     @greet.command(name="test", help="Sends a test welcome message to preview the setup.")
     @blacklist_check()

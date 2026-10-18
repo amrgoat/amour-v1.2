@@ -147,6 +147,22 @@ async def get_ignore_data(guild_id: int) -> dict:
 
     return data
 
+def bot_owner_ids(bot):
+  """Every user ID that counts as this bot's owner."""
+  owners = set(bot.owner_ids or ())
+  if bot.owner_id is not None:
+    owners.add(bot.owner_id)
+  if not owners:
+    from utils.config import OWNER_IDS as _OWNER_IDS
+    owners = set(_OWNER_IDS)
+  return owners
+
+
+def is_bot_owner(bot, user_id: int) -> bool:
+  """True when ``user_id`` is one of the configured bot owners."""
+  return int(user_id) in bot_owner_ids(bot)
+
+
 def bot_owner_check():
   """Strict bot-owner check.
 
@@ -156,14 +172,7 @@ def bot_owner_check():
   """
 
   async def predicate(ctx):
-    bot = ctx.bot
-    owners = set(bot.owner_ids or ())
-    if bot.owner_id is not None:
-      owners.add(bot.owner_id)
-    if not owners:
-      from utils.config import OWNER_IDS as _OWNER_IDS
-      owners = set(_OWNER_IDS)
-    if ctx.author.id not in owners:
+    if not is_bot_owner(ctx.bot, ctx.author.id):
       # NotOwner (a CheckFailure subclass) so the error handler can explain it.
       raise commands.NotOwner()
     return True

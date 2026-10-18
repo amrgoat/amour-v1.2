@@ -530,14 +530,33 @@ def _build_block(block: dict[str, Any], placeholders, template_id: int | None):
 
     if kind == "gallery":
         items = [
-            discord.MediaGalleryItem(render_text(url, placeholders)) for url in block["items"]
+            discord.MediaGalleryItem(url)
+            for url in (render_text(item, placeholders) for item in block["items"])
+            if url.strip()
         ]
+        # An image URL like {server_icon} can resolve to nothing. Discord
+        # rejects empty media URLs, so show the links as text instead.
+        if not items:
+            return ui.TextDisplay("\n".join(block["items"]))
         return ui.MediaGallery(*items)
 
     if kind == "section":
-        texts = [ui.TextDisplay(render_text(text, placeholders)) for text in block["text"]]
-        accessory = ui.Thumbnail(render_text(block["thumbnail"], placeholders))
-        return ui.Section(*texts, accessory=accessory)
+        rendered = [render_text(text, placeholders) for text in block["text"]]
+        # Discord requires a section accessory. Older templates (and hand-written
+        # JSON) may not have a thumbnail, and placeholders such as {server_icon}
+        # can resolve to an empty string, so fall back to plain text instead of
+        # sending an empty media URL, which the API rejects.
+        thumb_url = (
+            render_text(block["thumbnail"], placeholders).strip()
+            if block["thumbnail"]
+            else ""
+        )
+        if not thumb_url:
+            return ui.TextDisplay("\n\n".join(rendered))
+        return ui.Section(
+            *[ui.TextDisplay(text) for text in rendered],
+            accessory=ui.Thumbnail(thumb_url),
+        )
 
     if kind == "menu":
         options = [

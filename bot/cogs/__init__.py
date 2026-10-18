@@ -114,7 +114,7 @@ async def setup(bot: zyrox):
         Invcrole, Steal, Timer,
         Blacklist, Block, Badges, Guild, Errors, Autorole2, Autorole, greet, AutoResponder,
         Mention, AutoRole, React,
-        Stats, Status, NoPrefix, AutoReaction, AutoReactListener, Ban, Unban, Mute, Unmute, Lock, Unlock, Hide, Unhide, Kick, Warn, Role, Message, Moderation, TopCheck, Snipe, Global, QR, VanityRoles, Messages, TranslateCog, FastGreet, Jail, inviteTracker,Counting
+        Stats, Status, NoPrefix, AutoReaction, AutoReactListener, Ban, Unban, Mute, Unmute, Lock, Unlock, Hide, Unhide, Kick, Warn, Role, Message, Moderation, TopCheck, Snipe, Global, VanityRoles, Messages, TranslateCog, FastGreet, Jail, inviteTracker,Counting
     ]
 
 

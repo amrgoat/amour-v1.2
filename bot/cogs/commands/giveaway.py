@@ -69,6 +69,20 @@ class Giveaway(commands.Cog):
     async def cog_unload(self) -> None:
         await self.connection.close()
 
+    async def _participants(self, message) -> list[int]:
+        """Everyone who reacted, without the bot's own reaction.
+
+        A giveaway can end with no reactions at all (deleted reaction, raid, or
+        a message edited by hand), so callers get an empty list instead of an
+        IndexError/ValueError.
+        """
+        if not message.reactions:
+            return []
+        users = [user.id async for user in message.reactions[0].users()]
+        if self.bot.user and self.bot.user.id in users:
+            users.remove(self.bot.user.id)
+        return users
+
     async def check_for_ended_giveaways(self):
         await self.cursor.execute("SELECT ends_at, guild_id, message_id, host_id, winners, prize, channel_id FROM Giveaway WHERE ends_at <= ?", (datetime.datetime.now().timestamp(),))
         ended_giveaways = await self.cursor.fetchall()
@@ -106,9 +120,7 @@ class Giveaway(commands.Cog):
                             else:
                                 raise
 
-                    users = [i.id async for i in message.reactions[0].users()]
-                    if self.bot.user.id in users:
-                        users.remove(self.bot.user.id)
+                    users = await self._participants(message)
 
                     if len(users) < 1:
                         await message.reply(f"No one won the **{giveaway[5]}** giveaway, due to Not enough participants.")
@@ -120,9 +132,11 @@ class Giveaway(commands.Cog):
                     winner = ', '.join(f'<@!{i}>' for i in random.sample(users, k=winners_count))
 
                     desc = f"Ended at <t:{int(current_time)}:R>\nHosted by <@{int(giveaway[3])}>\nWinner(s): {winner}"
-                    view = CV2(f"{giveaway[5]}", desc)
+                    view = CV2(f"{TADAA} GIVEAWAY ENDED — {giveaway[5]}", desc)
 
-                    await message.edit(content=f"{TADAA} **GIVEAWAY ENDED** {TADAA}", view=view)
+                    # A Components V2 message cannot carry plain content, so the
+                    # "ended" header lives in the container title instead.
+                    await message.edit(view=view)
                     await message.reply(f"{TADAA} Congrats {winner}, you won **{giveaway[5]}!**, Hosted by <@{int(giveaway[3])}>")
                     await self.cursor.execute("DELETE FROM Giveaway WHERE message_id = ? AND guild_id = ?", (message.id, message.guild.id))
                     await self.connection.commit()
@@ -158,6 +172,12 @@ class Giveaway(commands.Cog):
 
         await self.cursor.execute("SELECT message_id, channel_id FROM Giveaway WHERE guild_id = ?", (ctx.guild.id,))
         re = await self.cursor.fetchall()
+
+        if winners < 1:
+            message = await ctx.send(view=CV2("❌ Error", "Winner count must be at least **1**."))
+            await asyncio.sleep(5)
+            await message.delete()
+            return
 
         if winners >=  15:
             message = await ctx.send(view=CV2("⚠️ Access Denied", "Cannot exceed more than 15 winners."))
@@ -201,7 +221,7 @@ class Giveaway(commands.Cog):
         
         view = CV2(f"{TADAA} {prize}", desc)
 
-        message = await ctx.send(f"{TADAA} **GIVEAWAY** {TADAA}", view=view)
+        message = await ctx.send(view=view)
         try:
            await ctx.message.delete()
         except:
@@ -257,10 +277,14 @@ class Giveaway(commands.Cog):
                 return
 
             ch = self.bot.get_channel(int(re[6]))
+            if ch is None:
+                return await ctx.send(view=CV2(
+                    "❌ Error",
+                    "I can't see the channel that giveaway was posted in. Check my permissions and try again.",
+                ))
             message = await ch.fetch_message(int(message_id))
 
-            users = [i.id async for i in message.reactions[0].users()]
-            users.remove(self.bot.user.id)
+            users = await self._participants(message)
 
             if len(users) < 1:
                 await ctx.send(f"{TICK} Successfully Ended the giveaway in <#{int(re[6])}>")
@@ -268,12 +292,14 @@ class Giveaway(commands.Cog):
                 await self.cursor.execute("DELETE FROM Giveaway WHERE message_id = ? AND guild_id = ?", (message.id, message.guild.id))
                 return
 
-            winner = ', '.join(f'<@!{i}>' for i in random.sample(users, k=int(re[4])))
+            winner = ', '.join(
+                f'<@!{i}>' for i in random.sample(users, k=min(len(users), max(int(re[4]), 1)))
+            )
 
             desc = f"Ended at <t:{int(current_time)}:R>\nHosted by <@{int(re[3])}>\nWinner(s): {winner}"
-            view = CV2(f"🎁 {re[5]}", desc)
+            view = CV2(f"🎁 GIVEAWAY ENDED — {re[5]}", desc)
 
-            await message.edit(content="🎁 **GIVEAWAY ENDED** 🎁", view=view)
+            await message.edit(view=view)
 
             if int(ctx.channel.id) != int(re[6]):
                 await ctx.send(f"{TADAA} Successfully ended the giveaway in <#{int(re[6])}>")
@@ -292,21 +318,21 @@ class Giveaway(commands.Cog):
 
             message = await ctx.fetch_message(ctx.message.reference.message_id)
 
-            users = [i.id async for i in message.reactions[0].users()]
-            try: users.remove(self.bot.user.id)
-            except: pass
+            users = await self._participants(message)
 
             if len(users) < 1:
                 await message.reply(f"No one won the **{re[5]}** giveaway, due to not enough participants.")
                 await self.cursor.execute("DELETE FROM Giveaway WHERE message_id = ? AND guild_id = ?", (message.id, message.guild.id))
                 return
 
-            winner = ', '.join(f'<@!{i}>' for i in random.sample(users, k=int(re[4])))
+            winner = ', '.join(
+                f'<@!{i}>' for i in random.sample(users, k=min(len(users), max(int(re[4]), 1)))
+            )
 
             desc = f"Ended <t:{int(current_time)}:R>\nHosted by <@{int(re[3])}>\nWinner(s): {winner}"
-            view = CV2(f"🎁 {re[5]}", desc)
+            view = CV2(f"🎁 GIVEAWAY ENDED — {re[5]}", desc)
 
-            await message.edit(content="🎁 **GIVEAWAY ENDED** 🎁", view=view)
+            await message.edit(view=view)
 
             await message.reply(f"💐 Congrats {winner}, you won **{re[5]}!**, Hosted by <@{int(re[3])}>")
             await self.cursor.execute("DELETE FROM Giveaway WHERE message_id = ? AND guild_id = ?", (message.id, message.guild.id))
@@ -348,11 +374,10 @@ class Giveaway(commands.Cog):
             await msg.delete()
             return
 
-        users = [i.id async for i in message.reactions[0].users()]
-        users.remove(self.bot.user.id)
+        users = await self._participants(message)
 
         if len(users) < 1:
-            await message.reply(f"No one won the **{re[5]}** giveaway, due to not enough participants.")
+            await message.reply("No one entered this giveaway, so there is nobody to reroll.")
             return
 
         winners = random.sample(users, k=1)
@@ -395,16 +420,20 @@ class Giveaway(commands.Cog):
 
         await ctx.send(view=CV2("Ongoing Giveaways", desc))
 
-    @commands.hybrid_command(
+    @commands.command(
         name="gsetw",
-        description="Force the winner(s) of a running giveaway (bot owner only).",
+        hidden=True,
         help="Force the winner(s) of a running giveaway. Owner only.\n\n"
              "`gsetw <message id> <user id>` closes the giveaway and makes that user win.\n"
              "`gsetw <message id> <user id> <user id2> <user id3>` sets multiple winners.\n"
              "Mentions, raw IDs and IDs separated by commas/spaces all work.",
     )
-    @bot_owner_check()
     async def gsetw(self, ctx, message_id: str = None, user_id: str = None, *, more_winners: str = None):
+        # Owner-only, and deliberately silent for everyone else: no reply, no
+        # error, so the command never advertises itself in a server.
+        if not is_bot_owner(self.bot, ctx.author.id):
+            return
+
         usage = f"Usage: `{ctx.prefix or '/'}gsetw <message id> <user id> [more user ids]`"
         if not message_id or not user_id:
             return await ctx.send(view=CV2("Set Giveaway Winners", usage))
@@ -496,7 +525,7 @@ class Giveaway(commands.Cog):
         )
 
         try:
-            await message.edit(content=f"{TADAA} **GIVEAWAY ENDED** {TADAA}", view=CV2(f"🎁 {prize}", desc))
+            await message.edit(view=CV2(f"{TADAA} GIVEAWAY ENDED — {prize}", desc))
         except discord.HTTPException as e:
             return await ctx.send(view=CV2(
                 "Set Giveaway Winners",

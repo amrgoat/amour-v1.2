@@ -17,4 +17,4 @@ class _giveaway(commands.Cog):
 
     @commands.group()
     async def __Giveaway__(self, ctx: commands.Context):
-        """`gstart`, `gend`, `greroll` , `glist`, `gsetw`"""
+        """`gstart`, `gend`, `greroll` , `glist`"""
