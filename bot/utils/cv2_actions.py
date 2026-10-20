@@ -1,4 +1,4 @@
-"""Execution of Components V2 button actions.
+"""Execution of Components V2 actions (button clicks and menu picks).
 
 The rules implemented here follow Discord's interaction model:
 
@@ -7,13 +7,13 @@ The rules implemented here follow Discord's interaction model:
 * actions run in the configured order and a failure never stops later actions;
 * successful side effects are kept (there is no rollback);
 * the final summary is private and only lists changes that really happened;
-* role changes always get a private confirmation line, even when the button's
+* role changes always get a private confirmation line, even when the action's
   own messages are silenced.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable
 
 import discord
 
@@ -97,16 +97,23 @@ async def _run_role_action(
             errors.append(f"Discord rejected the change for {role.mention} ({exc.status}).")
 
 
-async def execute_button(
+async def execute_actions(
     interaction: discord.Interaction,
-    button: dict[str, Any],
+    actions: Iterable[dict[str, Any]],
     *,
+    label: str = "",
     template_name: str = "",
+    heading: str | None = None,
 ) -> None:
-    """Run every action attached to ``button`` and report the outcome privately."""
+    """Run every action in ``actions`` and report the outcome privately.
+
+    ``label`` is the button label (or menu option label) used by the
+    ``{button_label}`` placeholder, and ``heading`` is an optional first line
+    for the private summary.
+    """
     if interaction.guild is None:
         await interaction.response.send_message(
-            "These buttons only work inside a server.", ephemeral=True
+            "These components only work inside a server.", ephemeral=True
         )
         return
 
@@ -127,7 +134,7 @@ async def execute_button(
         bot=getattr(interaction, "client", None),
         prefix=prefix,
     )
-    base["button_label"] = button.get("label", "")
+    base["button_label"] = label
     base["template_name"] = template_name
 
     added: list[str] = []
@@ -135,7 +142,7 @@ async def execute_button(
     notes: list[str] = []
     errors: list[str] = []
 
-    for action in button.get("actions", []):
+    for action in actions:
         kind = action["type"]
         try:
             if kind in ROLE_ACTION_TYPES:
@@ -172,6 +179,8 @@ async def execute_button(
             errors.append(f"`{kind}` failed ({type(exc).__name__}).")
 
     lines: list[str] = []
+    if heading:
+        lines.append(heading)
     if added:
         lines.append("Your roles have been updated.")
         lines.append("**ROLE ADDED:** " + ", ".join(added))
@@ -189,3 +198,18 @@ async def execute_button(
         lines.append("Nothing to do.")
 
     await interaction.followup.send(_clip("\n".join(lines)), ephemeral=True)
+
+
+async def execute_button(
+    interaction: discord.Interaction,
+    button: dict[str, Any],
+    *,
+    template_name: str = "",
+) -> None:
+    """Run every action attached to ``button`` and report the outcome privately."""
+    await execute_actions(
+        interaction,
+        button.get("actions") or [],
+        label=button.get("label", ""),
+        template_name=template_name,
+    )

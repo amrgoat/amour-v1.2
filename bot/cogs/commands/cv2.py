@@ -28,13 +28,16 @@ import discord
 from discord import app_commands, ui
 from discord.ext import commands
 
-from utils.cv2_actions import execute_button
+from utils.cv2_actions import execute_actions, execute_button
 from utils.cv2_store import (
     MAX_BLOCKS,
+    ACTION_NAMES,
     ACTION_TYPES,
+    ROLE_ACTION_TYPES,
     CV2Error,
     build_view,
     delete_template,
+    describe_action,
     describe_block,
     empty_template,
     get_template,
@@ -42,6 +45,7 @@ from utils.cv2_store import (
     init_db,
     list_templates,
     new_button_id,
+    normalize_action,
     normalize_block,
     normalize_button,
     normalize_template,
@@ -55,15 +59,7 @@ from utils.variables import build_variables
 
 RED = 0xFF0000
 
-ACTION_LABELS = {
-    "link": "Link button (opens a URL)",
-    "role_add": "Add role",
-    "role_remove": "Remove role",
-    "role_toggle": "Toggle role",
-    "ephemeral": "Private reply",
-    "dm": "Send a direct message",
-    "channel_message": "Post in a channel",
-}
+ACTION_LABELS = {key: ACTION_NAMES[key] for key in ACTION_TYPES}
 
 ACTION_STYLES = {
     "link": "link",
@@ -345,7 +341,7 @@ class MenuBlockModal(_BuilderModal):
         self.add_item(
             ui.Label(
                 text="Options — one per line",
-                description="emoji | label | description · the emoji and description are optional",
+                description="emoji | label | description · actions are added after saving, from Menu actions",
                 component=self.options_input,
             )
         )
@@ -511,8 +507,24 @@ class ButtonModal(_BuilderModal):
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
 
-        self.builder.add_button(button)
+        row_index, button_index = self.builder.add_button(button)
         await self._finish(interaction)
+
+        # Offer the action panel straight away: one click adds the button, the
+        # panel is where extra actions (role + DM + channel post …) are stacked.
+        panel = ButtonActionsPanel(
+            self.builder, button, row_index=row_index, button_index=button_index
+        )
+        try:
+            await interaction.followup.send(
+                content=panel.content(
+                    note="Add more actions below — they all run when the button is clicked."
+                ),
+                view=panel,
+                ephemeral=True,
+            )
+        except discord.HTTPException:
+            pass
 
 
 class ChannelPickView(ui.View):
@@ -561,11 +573,504 @@ class ChannelPickView(ui.View):
         except CV2Error as exc:
             await interaction.response.edit_message(content=str(exc), view=None)
             return
-        self.builder.add_button(button)
+        row_index, button_index = self.builder.add_button(button)
         await interaction.response.edit_message(
             content=f"Button added — it will post in {channel.mention}.", view=None
         )
         await self.builder.refresh()
+        panel = ButtonActionsPanel(
+            self.builder, button, row_index=row_index, button_index=button_index
+        )
+        try:
+            await interaction.followup.send(content=panel.content(), view=panel, ephemeral=True)
+        except discord.HTTPException:
+            pass
+
+
+def _parse_channel_id(raw: str, guild: discord.Guild | None) -> int | None:
+    """Accept `<#123>`, `123` or `#channel-name` in the action modal."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    match = re.search(r"\d{15,25}", raw)
+    if match:
+        return int(match.group())
+    if guild is not None:
+        name = raw.lstrip("#").strip().lower()
+        for channel in guild.text_channels:
+            if channel.name.lower() == name:
+                return channel.id
+    return None
+
+
+class ActionModal(_BuilderModal):
+    """Add one action to a button or to a menu option."""
+
+    def __init__(
+        self,
+        builder: "CV2Builder",
+        on_save: Any,
+        *,
+        title: str = "Add an action",
+        existing: dict[str, Any] | None = None,
+    ):
+        super().__init__(builder, title=title)
+        self.on_save = on_save
+        current = (existing or {}).get("type")
+        self.kind = ui.Select(
+            placeholder="What should this action do?",
+            options=[
+                discord.SelectOption(
+                    label=ACTION_LABELS[key],
+                    value=key,
+                    default=key == current,
+                )
+                for key in ACTION_TYPES
+            ],
+        )
+        self.roles = ui.TextInput(
+            placeholder="123456789012345678, 234567890123456789",
+            required=False,
+            max_length=400,
+        )
+        self.message = ui.TextInput(
+            style=discord.TextStyle.paragraph,
+            placeholder="Supports {user}, {server_name}, {button_label} …",
+            required=False,
+            max_length=2000,
+        )
+        self.channel = ui.TextInput(
+            placeholder="#general or 123456789012345678",
+            required=False,
+            max_length=100,
+        )
+        self.url = ui.TextInput(
+            placeholder="https://example.com",
+            required=False,
+            max_length=512,
+        )
+        self.add_item(ui.Label(text="Action", component=self.kind))
+        self.add_item(
+            ui.Label(
+                text="Roles (role actions only)",
+                description="Role IDs or mentions, comma separated",
+                component=self.roles,
+            )
+        )
+        self.add_item(ui.Label(text="Message (optional)", component=self.message))
+        self.add_item(
+            ui.Label(
+                text="Channel (post-in-channel only)",
+                component=self.channel,
+            )
+        )
+        self.add_item(ui.Label(text="URL (link only)", component=self.url))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not await self._author_ok(interaction):
+            return
+
+        kind = self.kind.values[0] if self.kind.values else "role_add"
+        try:
+            if kind in ROLE_ACTION_TYPES:
+                action = normalize_action(
+                    {"type": kind, "role_ids": _parse_role_ids(self.roles.value)}
+                )
+            elif kind in ("dm", "ephemeral"):
+                action = normalize_action({"type": kind, "message": self.message.value})
+            elif kind == "channel_message":
+                channel_id = _parse_channel_id(self.channel.value, self.builder.ctx.guild)
+                if channel_id is None:
+                    raise CV2Error("Give a channel ID or a #channel-name for that action.")
+                action = normalize_action(
+                    {
+                        "type": kind,
+                        "channel_id": channel_id,
+                        "message": self.message.value,
+                    }
+                )
+            else:
+                action = normalize_action({"type": "link", "url": self.url.value})
+        except CV2Error as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+
+        await self.on_save(interaction, action)
+
+
+class ActionsPanel(ui.View):
+    """Private panel that adds and removes the actions of one component.
+
+    ``owner`` is the button or menu option dict inside the builder's data, so
+    every change here is already part of the layout being edited.
+    """
+
+    def __init__(
+        self,
+        builder: "CV2Builder",
+        owner: dict[str, Any],
+        *,
+        title: str,
+        settings_factory: Any = None,
+        settings_label: str = "Component settings",
+    ):
+        super().__init__(timeout=600)
+        self.builder = builder
+        self.owner = owner
+        self.title = title
+        self.settings_factory = settings_factory
+        self.settings_label = settings_label
+        self.rebuild()
+
+    @property
+    def actions(self) -> list[dict[str, Any]]:
+        self.owner.setdefault("actions", [])
+        return self.owner["actions"]
+
+    def rebuild(self) -> None:
+        self.clear_items()
+
+        add = ui.Button(label="Add action", style=discord.ButtonStyle.success)
+        add.callback = self.add_action
+        self.add_item(add)
+
+        actions = self.actions
+        if actions:
+            remove = ui.Select(
+                placeholder="Remove an action…",
+                options=[
+                    discord.SelectOption(
+                        label=_short(f"{index}. {describe_action(action)}", 100),
+                        value=str(index - 1),
+                    )
+                    for index, action in enumerate(actions, start=1)
+                ][:25],
+            )
+            remove.callback = self.remove_action
+            self.add_item(remove)
+
+        if self.settings_factory is not None:
+            settings = ui.Button(
+                label=self.settings_label, style=discord.ButtonStyle.primary
+            )
+            settings.callback = self.settings_factory
+            self.add_item(settings)
+
+        done = ui.Button(label="Done", style=discord.ButtonStyle.secondary)
+        done.callback = self.close
+        self.add_item(done)
+
+    def content(self, note: str | None = None) -> str:
+        lines = [self.title, ""]
+        actions = self.actions
+        if not actions:
+            lines.append("*No actions yet — add one below.*")
+            if not self.owner.get("url"):
+                lines.append("*A button needs at least one action (or a URL) to be saved.*")
+        else:
+            for index, action in enumerate(actions, start=1):
+                lines.append(f"`{index:02d}` {describe_action(action)}")
+            lines.append("")
+            lines.append(f"{len(actions)}/10 action(s) — they run from top to bottom.")
+        if note:
+            lines.append("")
+            lines.append(note)
+        text = "\n".join(lines)
+        return text if len(text) <= 1900 else text[:1890] + "…"
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.builder.ctx.author.id:
+            await interaction.response.send_message(
+                "This builder belongs to someone else.", ephemeral=True
+            )
+            return False
+        return True
+
+    async def add_action(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(
+            ActionModal(self.builder, self._save_action, title="Add an action")
+        )
+
+    async def _save_action(
+        self, interaction: discord.Interaction, action: dict[str, Any]
+    ) -> None:
+        if len(self.actions) >= 10:
+            await interaction.response.send_message(
+                "This component already runs 10 actions — remove one first.",
+                ephemeral=True,
+            )
+            return
+        self.actions.append(action)
+        self.rebuild()
+        await interaction.response.edit_message(
+            content=self.content(note=f"Added `{describe_action(action)}`."), view=self
+        )
+
+    async def remove_action(self, interaction: discord.Interaction):
+        try:
+            index = int(interaction.data["values"][0])
+        except (KeyError, IndexError, TypeError, ValueError):
+            return
+        actions = self.actions
+        if not 0 <= index < len(actions):
+            await interaction.response.edit_message(
+                content="That action is already gone.", view=None
+            )
+            return
+        removed = actions.pop(index)
+        self.rebuild()
+        await interaction.response.edit_message(
+            content=self.content(note=f"Removed `{describe_action(removed)}`."), view=self
+        )
+
+    async def close(self, interaction: discord.Interaction):
+        self.stop()
+        await interaction.response.edit_message(
+            content=f"{TICK} Actions saved to the layout.", view=None
+        )
+        await self.builder.refresh()
+
+
+class ButtonStyleModal(_BuilderModal):
+    """Rename or restyle a button without touching its actions."""
+
+    def __init__(self, builder: "CV2Builder", button: dict[str, Any], on_save: Any):
+        super().__init__(builder, title="Button settings")
+        self.button = button
+        self.on_save = on_save
+        self.label_input = ui.TextInput(
+            default=button["label"], max_length=80, required=True
+        )
+        self.emoji_input = ui.TextInput(
+            default=button.get("emoji"),
+            placeholder="<:name:id> or 🎉 (optional)",
+            max_length=100,
+            required=False,
+        )
+        self.url_input = ui.TextInput(
+            default=button.get("url"),
+            placeholder="https://example.com (URL buttons only)",
+            max_length=512,
+            required=False,
+        )
+        style = str(button.get("style") or "primary")
+        self.style_select = ui.Select(
+            placeholder="Button color",
+            options=[
+                discord.SelectOption(label=name.title(), value=name, default=name == style)
+                for name in ("primary", "secondary", "success", "danger")
+            ],
+        )
+        self.add_item(ui.Label(text="Label", component=self.label_input))
+        self.add_item(ui.Label(text="Emoji (optional)", component=self.emoji_input))
+        self.add_item(ui.Label(text="URL (optional)", component=self.url_input))
+        self.add_item(ui.Label(text="Color", component=self.style_select))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not await self._author_ok(interaction):
+            return
+
+        style = self.style_select.values[0] if self.style_select.values else "primary"
+        try:
+            clean = normalize_button(
+                {
+                    "id": self.button.get("id"),
+                    "label": self.label_input.value,
+                    "emoji": self.emoji_input.value.strip() or None,
+                    "style": style,
+                    "disabled": self.button.get("disabled", False),
+                    "url": self.url_input.value.strip() or None,
+                    "actions": list(self.button.get("actions") or []),
+                }
+            )
+        except CV2Error as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+
+        self.button.clear()
+        self.button.update(clean)
+        await self.on_save(interaction)
+
+
+class ButtonActionsPanel(ActionsPanel):
+    """Actions of a single button inside a button row."""
+
+    def __init__(
+        self,
+        builder: "CV2Builder",
+        button: dict[str, Any],
+        *,
+        row_index: int,
+        button_index: int,
+    ):
+        self.row_index = row_index
+        self.button_index = button_index
+        super().__init__(
+            builder,
+            button,
+            title=f"**Button:** {button['label']}",
+            settings_factory=self.edit_settings,
+            settings_label="Button settings",
+        )
+
+    def rebuild(self) -> None:
+        super().rebuild()
+        delete = ui.Button(label="Delete button", style=discord.ButtonStyle.danger)
+        delete.callback = self.delete_button
+        self.add_item(delete)
+
+    def edit_settings(self, interaction: discord.Interaction):
+        return interaction.response.send_modal(
+            ButtonStyleModal(self.builder, self.owner, self._settings_saved)
+        )
+
+    async def _settings_saved(self, interaction: discord.Interaction) -> None:
+        self.title = f"**Button:** {self.owner['label']}"
+        self.rebuild()
+        await interaction.response.edit_message(
+            content=self.content(note="Button updated."), view=self
+        )
+
+    async def delete_button(self, interaction: discord.Interaction):
+        blocks = self.builder.data["blocks"]
+        if not 0 <= self.row_index < len(blocks):
+            await interaction.response.edit_message(
+                content="That row no longer exists.", view=None
+            )
+            return
+        buttons = blocks[self.row_index]["buttons"]
+        if not 0 <= self.button_index < len(buttons):
+            await interaction.response.edit_message(
+                content="That button is already gone.", view=None
+            )
+            return
+        buttons.pop(self.button_index)
+        if not buttons:
+            blocks.pop(self.row_index)
+        self.stop()
+        await interaction.response.edit_message(content="Button deleted.", view=None)
+        await self.builder.refresh()
+
+
+class RowButtonsView(ui.View):
+    """Pick which button of a row to configure."""
+
+    def __init__(self, builder: "CV2Builder", index: int):
+        super().__init__(timeout=300)
+        self.builder = builder
+        self.index = index
+        buttons = builder.data["blocks"][index]["buttons"]
+        select = ui.Select(
+            placeholder="Pick a button to edit…",
+            options=[
+                discord.SelectOption(
+                    label=_short(f"{position}. {button['label']}", 100),
+                    value=str(position - 1),
+                    description=_short(
+                        f"{len(button.get('actions') or [])} action(s)"
+                        + (" · URL button" if button.get("url") else ""),
+                        100,
+                    ),
+                )
+                for position, button in enumerate(buttons, start=1)
+            ][:25],
+        )
+        select.callback = self.pick
+        self.add_item(select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.builder.ctx.author.id:
+            await interaction.response.send_message(
+                "This builder belongs to someone else.", ephemeral=True
+            )
+            return False
+        return True
+
+    async def pick(self, interaction: discord.Interaction):
+        try:
+            index = int(interaction.data["values"][0])
+        except (KeyError, IndexError, TypeError, ValueError):
+            return
+        blocks = self.builder.data["blocks"]
+        if not 0 <= self.index < len(blocks):
+            await interaction.response.edit_message(
+                content="That row no longer exists.", view=None
+            )
+            return
+        buttons = blocks[self.index]["buttons"]
+        if not 0 <= index < len(buttons):
+            await interaction.response.edit_message(
+                content="That button is already gone.", view=None
+            )
+            return
+        panel = ButtonActionsPanel(
+            self.builder, buttons[index], row_index=self.index, button_index=index
+        )
+        await interaction.response.edit_message(content=panel.content(), view=panel)
+
+
+class MenuOptionPanel(ActionsPanel):
+    """Actions that run when one menu option is picked."""
+
+    def __init__(self, builder: "CV2Builder", option: dict[str, Any]):
+        super().__init__(
+            builder,
+            option,
+            title=f"**Menu option:** {option['label']}",
+        )
+
+
+class MenuOptionsView(ui.View):
+    """Pick which menu option gets actions."""
+
+    def __init__(self, builder: "CV2Builder", index: int):
+        super().__init__(timeout=300)
+        self.builder = builder
+        self.index = index
+        options = builder.data["blocks"][index]["options"]
+        select = ui.Select(
+            placeholder="Pick an option to give actions…",
+            options=[
+                discord.SelectOption(
+                    label=_short(f"{position}. {option['label']}", 100),
+                    value=str(position - 1),
+                    description=_short(
+                        f"{len(option.get('actions') or [])} action(s)", 100
+                    ),
+                )
+                for position, option in enumerate(options, start=1)
+            ][:25],
+        )
+        select.callback = self.pick
+        self.add_item(select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.builder.ctx.author.id:
+            await interaction.response.send_message(
+                "This builder belongs to someone else.", ephemeral=True
+            )
+            return False
+        return True
+
+    async def pick(self, interaction: discord.Interaction):
+        try:
+            index = int(interaction.data["values"][0])
+        except (KeyError, IndexError, TypeError, ValueError):
+            return
+        blocks = self.builder.data["blocks"]
+        if not 0 <= self.index < len(blocks):
+            await interaction.response.edit_message(
+                content="That menu no longer exists.", view=None
+            )
+            return
+        options = blocks[self.index]["options"]
+        if not 0 <= index < len(options):
+            await interaction.response.edit_message(
+                content="That option is already gone.", view=None
+            )
+            return
+        panel = MenuOptionPanel(self.builder, options[index])
+        await interaction.response.edit_message(content=panel.content(), view=panel)
 
 
 class SaveNameModal(_BuilderModal):
@@ -625,10 +1130,17 @@ class BlockActionsView(ui.View):
         self.index = index
         kind = builder.data["blocks"][index]["type"]
 
-        if kind in ("text", "section", "gallery", "menu"):
+        if kind in ("text", "section", "gallery", "menu", "row"):
             edit = ui.Button(label="Edit", style=discord.ButtonStyle.primary)
             edit.callback = self.edit_block
             self.add_item(edit)
+
+        if kind == "menu":
+            menu_actions = ui.Button(
+                label="Menu actions", style=discord.ButtonStyle.success
+            )
+            menu_actions.callback = self.menu_actions
+            self.add_item(menu_actions)
 
         remove = ui.Button(label="Remove", style=discord.ButtonStyle.danger)
         remove.callback = self.remove_block
@@ -707,6 +1219,25 @@ class BlockActionsView(ui.View):
             await interaction.response.send_modal(GalleryBlockModal(self.builder, self.index))
         elif kind == "menu":
             await interaction.response.send_modal(MenuBlockModal(self.builder, self.index))
+        elif kind == "row":
+            buttons = self.builder.data["blocks"][self.index]["buttons"]
+            if not buttons:
+                await interaction.response.send_message(
+                    "That row has no buttons left.", ephemeral=True
+                )
+                return
+            await interaction.response.send_message(
+                "Pick a button to edit its actions, label or color.",
+                view=RowButtonsView(self.builder, self.index),
+                ephemeral=True,
+            )
+
+    async def menu_actions(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            "Pick an option to choose what happens when it is selected.",
+            view=MenuOptionsView(self.builder, self.index),
+            ephemeral=True,
+        )
 
     async def remove_block(self, interaction: discord.Interaction):
         self.builder.data["blocks"].pop(self.index)
@@ -741,12 +1272,14 @@ class CV2Builder(ui.LayoutView):
 
     # -- state helpers ------------------------------------------------------
 
-    def add_button(self, button: dict[str, Any]) -> None:
+    def add_button(self, button: dict[str, Any]) -> tuple[int, int]:
+        """Append a button and return its ``(block index, button index)``."""
         blocks = self.data["blocks"]
         if blocks and blocks[-1]["type"] == "row" and len(blocks[-1]["buttons"]) < 5:
             blocks[-1]["buttons"].append(button)
-        else:
-            blocks.append({"type": "row", "buttons": [button]})
+            return len(blocks) - 1, len(blocks[-1]["buttons"]) - 1
+        blocks.append({"type": "row", "buttons": [button]})
+        return len(blocks) - 1, 0
 
     def summary(self) -> str:
         lines: list[str] = []
@@ -787,7 +1320,7 @@ class CV2Builder(ui.LayoutView):
                 discord.SelectOption(
                     label="Menu",
                     value="menu",
-                    description="Dropdown with emoji + description options",
+                    description="Dropdown · emoji, description and per-option actions",
                 ),
                 discord.SelectOption(label="Accent color", value="accent"),
                 discord.SelectOption(label="Clear all blocks", value="clear"),
@@ -1296,11 +1829,13 @@ class CV2Messages(commands.Cog):
     async def handle_menu_select(
         self, interaction: discord.Interaction, custom_id: str
     ) -> None:
-        """Acknowledge a CV2 dropdown selection.
+        """Handle a CV2 dropdown selection.
 
-        Menus are display components: they have no bot-side effect, so the
-        selection is confirmed privately instead of staying unanswered (which
-        Discord would show as "This interaction failed").
+        Each option can carry its own actions (roles, DM, private reply, channel
+        post, link). They run for the picked option(s) and the outcome is
+        confirmed privately; a menu without actions simply confirms the choice,
+        so the interaction never stays unanswered (which Discord shows as "This
+        interaction failed").
         """
         parts = custom_id.split(":")
         if len(parts) != 3:
@@ -1344,12 +1879,33 @@ class CV2Messages(commands.Cog):
             return
 
         if len(picked) == 1:
-            note = f"You picked **{picked[0]['label']}**"
+            heading = f"You picked **{picked[0]['label']}**"
             if picked[0].get("description"):
-                note += f" — {picked[0]['description']}"
+                heading += f" — {picked[0]['description']}"
         else:
-            note = "You picked " + ", ".join(f"**{o['label']}**" for o in picked)
-        await interaction.response.send_message(note, ephemeral=True)
+            heading = "You picked " + ", ".join(f"**{o['label']}**" for o in picked)
+
+        actions: list[dict[str, Any]] = []
+        for option in picked:
+            actions.extend(option.get("actions") or [])
+
+        if not actions:
+            await interaction.response.send_message(heading, ephemeral=True)
+            return
+
+        try:
+            await execute_actions(
+                interaction,
+                actions,
+                label=picked[0]["label"],
+                template_name=row["name"],
+                heading=heading,
+            )
+        except Exception:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Something went wrong while handling that menu.", ephemeral=True
+                )
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):

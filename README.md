@@ -164,7 +164,11 @@ Limits are enforced while editing: 20 blocks and 40 components per layout.
 
 ### Button actions
 
-A button can run up to 10 actions, in order:
+Actions are stacked, not limited to one per button: the builder opens the action
+panel right after a button is added (and **Manage a block → Edit** reopens it for a
+button row), where **Add action** appends another one, the dropdown removes one, and
+**Button settings** changes the label, emoji, color or URL. A button can run up to 10
+actions, in order:
 
 | Action | Effect |
 |---|---|
@@ -197,8 +201,13 @@ Announcements
 
 The `emoji | label | description` form is flexible — the emoji and the description
 can both be left out. The builder shows the dropdown live, so the emoji, label and
-description can be checked before saving. Picking an option confirms the choice
-privately; menus are display components and run no bot action of their own.
+description can be checked before saving.
+
+Menu options run actions too: **Manage a block → Menu actions** picks an option, and
+the same action panel used by buttons (roles, private reply, DM, channel post, link)
+adds up to 10 actions to it. Picking an option runs the actions of every selected
+option in order and confirms the result privately; an option without actions just
+confirms the choice.
 
 ### Welcome messages
 
@@ -230,7 +239,31 @@ await send_template(channel, row["data"], template_id=row["id"], placeholders=..
 ```
 
 `utils/cv2_store.py` holds the schema, validation, rendering and storage;
-`utils/cv2_actions.py` executes button actions.
+`utils/cv2_actions.py` executes the actions of buttons and of menu options.
+
+### Giveaway messages
+
+Giveaways post as plain content plus one embed, so they keep working with reactions
+and the automated end loop:
+
+```text
+<:amour_giveaway:…> **Giveaway Started** <:amour_giveaway:…>
+```
+
+```text
+title        <:amour_gift:…> **<prize>** <:amour_gift:…>
+<:amour_dot:…> Winners: <count or winners>
+<:amour_dot> Ends: <t:…:R> (<t:…:f>)
+<:amour_dot> Hosted by: <@host>
+<:amour_dot> React with <a:TADAA:…> to participate!
+footer       Ends | <end time>
+```
+
+The header says **Giveaway Started** while it runs and **Giveaway Ended** once it
+closes. `amour_giveaway`, `amour_gift` and `amour_dot` are looked up by name in the
+guild (`utils.emoji.guild_emoji`), so each server can use its own uploads and fall
+back to 🎉 / 🎁 / • when they are missing. A footer cannot render Discord
+`<t:…>` timestamps, so the footer is a readable UTC time.
 
 ## Owner commands
 

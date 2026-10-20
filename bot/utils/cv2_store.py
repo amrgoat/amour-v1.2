@@ -27,7 +27,8 @@ OPTION::
         "label": "Giveaway",            # shown in the dropdown
         "value": "giveaway",            # returned on selection, unique per menu
         "description": "Get pinged…" | null,
-        "emoji": "<:name:123> | 🎉 | null"
+        "emoji": "<:name:123> | 🎉 | null",
+        "actions": [ACTION, ...]         # optional, at most 10, run when picked
     }
 
 BUTTON::
@@ -97,6 +98,17 @@ ACTION_TYPES = (
 )
 
 ROLE_ACTION_TYPES = ("role_add", "role_remove", "role_toggle")
+
+# Short names shared by the builder UI, the action panels and the help text.
+ACTION_NAMES = {
+    "link": "Link button (opens a URL)",
+    "role_add": "Add role",
+    "role_remove": "Remove role",
+    "role_toggle": "Toggle role",
+    "ephemeral": "Private reply",
+    "dm": "Send a direct message",
+    "channel_message": "Post in a channel",
+}
 
 STYLES = {
     "primary": discord.ButtonStyle.primary,
@@ -303,11 +315,19 @@ def normalize_menu_option(option: Any) -> dict[str, Any]:
     if len(value) > MAX_OPTION_VALUE:
         raise CV2Error(f"Option values can hold at most {MAX_OPTION_VALUE} characters.")
 
+    raw_actions = option.get("actions") or []
+    if not isinstance(raw_actions, list):
+        raise CV2Error("Option actions must be a list.")
+    actions = [normalize_action(action) for action in raw_actions]
+    if len(actions) > MAX_ACTIONS:
+        raise CV2Error(f"A menu option can run at most {MAX_ACTIONS} actions.")
+
     return {
         "label": label,
         "value": value,
         "description": description,
         "emoji": _parse_emoji(option.get("emoji")),
+        "actions": actions,
     }
 
 
@@ -639,8 +659,27 @@ def describe_block(block: dict[str, Any]) -> str:
         return f"Gallery · {len(block['items'])} image(s)"
     if kind == "menu":
         labels = ", ".join(option["label"] for option in block["options"][:3])
-        return f"Menu · {len(block['options'])} option(s) · {labels[:40]}"
-    return f"Buttons · {len(block['buttons'])} button(s)"
+        with_actions = sum(1 for option in block["options"] if option.get("actions"))
+        extra = f" · {with_actions} with actions" if with_actions else ""
+        return f"Menu · {len(block['options'])} option(s) · {labels[:40]}{extra}"
+    actions = sum(len(button.get("actions") or []) for button in block["buttons"])
+    return f"Buttons · {len(block['buttons'])} button(s) · {actions} action(s)"
+
+
+def describe_action(action: dict[str, Any]) -> str:
+    """One-line label for an action, used by the builder's action panels."""
+    kind = action["type"]
+    label = ACTION_NAMES.get(kind, kind)
+    if kind in ROLE_ACTION_TYPES:
+        roles = ", ".join(f"<@&{role_id}>" for role_id in action["role_ids"])
+        return f"{label} · {roles}"
+    if kind == "channel_message":
+        snippet = " ".join(action["message"].split())[:50]
+        return f"{label} · <#{action['channel_id']}> · {snippet}"
+    if kind in ("dm", "ephemeral"):
+        snippet = " ".join(action["message"].split())[:60]
+        return f"{label} · {snippet}"
+    return f"{label} · {action.get('url', '')}"
 
 
 # ── Persistence ───────────────────────────────────────────────────────────────

@@ -351,6 +351,20 @@ def get_button_emoji(button_type: str) -> str:
     return BUTTON_EMOJIS.get(button_type.lower())
 
 
+def guild_emoji(guild, name: str, fallback: str = "") -> str:
+    """Return the guild's custom emoji called ``name``, or ``fallback``.
+
+    Lets a message use server-specific emoji such as ``:amour_gift:`` without
+    hard-coding an ID, and keeps working (with a plain unicode emoji) in
+    servers that never uploaded them.
+    """
+    if guild is not None:
+        for emoji in getattr(guild, "emojis", ()):
+            if emoji.name == name:
+                return str(emoji)
+    return fallback
+
+
 # ============================================================================
 # COMPATIBILITY ALIASES
 # ============================================================================

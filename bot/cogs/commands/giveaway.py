@@ -5,12 +5,60 @@ import aiosqlite, random, re, typing
 import sqlite3
 import asyncio
 import discord, logging
-from utils.emoji import ARROWRED, TADAA, TICK
+from utils.emoji import TADAA, TICK, guild_emoji
 from discord.utils import get
 from utils.Tools import *
 import os
 import aiohttp
 from utils.cv2 import CV2
+
+# Giveaway message look — custom emoji are looked up by name in the guild so
+# every server keeps its own :amour_giveaway: / :amour_gift: / :amour_dot: set.
+GIVEAWAY_EMOJI = "amour_giveaway"
+GIFT_EMOJI = "amour_gift"
+DOT_EMOJI = "amour_dot"
+GIVEAWAY_COLOR = 0x2B2D31
+
+
+def _footer_time(timestamp: float) -> str:
+    """Human readable end time for the footer.
+
+    Discord renders ``<t:…>`` timestamps in message text, but not inside an
+    embed footer, so the footer gets a plain date/time instead.
+    """
+    moment = datetime.datetime.fromtimestamp(float(timestamp), datetime.timezone.utc)
+    clock = moment.strftime("%I:%M %p").lstrip("0")
+    if moment.date() == datetime.datetime.now(datetime.timezone.utc).date():
+        return f"Today at {clock}"
+    return moment.strftime("%b %d, %Y at ") + clock
+
+
+def giveaway_message(guild, prize, winners_text, ends_at, host_id, *, ended: bool):
+    """Build the (content, embed) pair used for a giveaway message."""
+    banner = guild_emoji(guild, GIVEAWAY_EMOJI, "🎉")
+    gift = guild_emoji(guild, GIFT_EMOJI, "🎁")
+    dot = guild_emoji(guild, DOT_EMOJI, "•")
+
+    state = "Giveaway Ended" if ended else "Giveaway Started"
+    content = f"{banner} **{state}** {banner}"
+
+    ends = int(float(ends_at))
+    title = f"{gift} **{prize}** {gift}"
+    if len(title) > 256:  # Discord's embed title limit
+        title = title[:255] + "…"
+    embed = discord.Embed(
+        title=title,
+        description=(
+            f"{dot} Winners: {winners_text}\n"
+            f"{dot} Ends: <t:{ends}:R> (<t:{ends}:f>)\n"
+            f"{dot} Hosted by: <@{int(host_id)}>\n"
+            f"{dot} React with {TADAA} to participate!"
+        ),
+        color=GIVEAWAY_COLOR,
+    )
+    embed.set_footer(text=f"Ends | {_footer_time(ends)}")
+    return content, embed
+
 
 db_folder = 'db'
 db_file = 'giveaways.db'
@@ -121,8 +169,17 @@ class Giveaway(commands.Cog):
                                 raise
 
                     users = await self._participants(message)
+                    ends_at = float(giveaway[0] or current_time)
 
                     if len(users) < 1:
+                        content, embed = giveaway_message(
+                            guild, giveaway[5], "No valid participants",
+                            ends_at, giveaway[3], ended=True,
+                        )
+                        try:
+                            await message.edit(content=content, embed=embed, view=None)
+                        except discord.HTTPException:
+                            pass
                         await message.reply(f"No one won the **{giveaway[5]}** giveaway, due to Not enough participants.")
                         await self.cursor.execute("DELETE FROM Giveaway WHERE message_id = ? AND guild_id = ?", (message.id, message.guild.id))
                         await self.connection.commit()
@@ -131,12 +188,10 @@ class Giveaway(commands.Cog):
                     winners_count = min(len(users), int(giveaway[4]))
                     winner = ', '.join(f'<@!{i}>' for i in random.sample(users, k=winners_count))
 
-                    desc = f"Ended at <t:{int(current_time)}:R>\nHosted by <@{int(giveaway[3])}>\nWinner(s): {winner}"
-                    view = CV2(f"{TADAA} GIVEAWAY ENDED — {giveaway[5]}", desc)
-
-                    # A Components V2 message cannot carry plain content, so the
-                    # "ended" header lives in the container title instead.
-                    await message.edit(view=view)
+                    content, embed = giveaway_message(
+                        guild, giveaway[5], winner, ends_at, giveaway[3], ended=True
+                    )
+                    await message.edit(content=content, embed=embed, view=None)
                     await message.reply(f"{TADAA} Congrats {winner}, you won **{giveaway[5]}!**, Hosted by <@{int(giveaway[3])}>")
                     await self.cursor.execute("DELETE FROM Giveaway WHERE message_id = ? AND guild_id = ?", (message.id, message.guild.id))
                     await self.connection.commit()
@@ -212,16 +267,11 @@ class Giveaway(commands.Cog):
 
         ends = (datetime.datetime.now().timestamp() + converted)
 
-        desc = (
-            f"{ARROWRED} Winner(s): **{winners}**\n"
-            f"{ARROWRED} Hosted by {ctx.author.mention}\n"
-            f"{ARROWRED} Ends <t:{round(ends)}:R> (<t:{round(ends)}:f>)\n\n"
-            f"{ARROWRED} React with {TADAA} to participate!"
+        content, embed = giveaway_message(
+            ctx.guild, prize, f"**{winners}**", ends, ctx.author.id, ended=False
         )
-        
-        view = CV2(f"{TADAA} {prize}", desc)
 
-        message = await ctx.send(view=view)
+        message = await ctx.send(content=content, embed=embed)
         try:
            await ctx.message.delete()
         except:
@@ -285,9 +335,14 @@ class Giveaway(commands.Cog):
             message = await ch.fetch_message(int(message_id))
 
             users = await self._participants(message)
+            ends_at = float(re[0] or current_time)
 
             if len(users) < 1:
                 await ctx.send(f"{TICK} Successfully Ended the giveaway in <#{int(re[6])}>")
+                content, embed = giveaway_message(
+                    ctx.guild, re[5], "No valid participants", ends_at, re[3], ended=True
+                )
+                await message.edit(content=content, embed=embed, view=None)
                 await message.reply(f"No one won the **{re[5]}** giveaway, due to Not enough participants.")
                 await self.cursor.execute("DELETE FROM Giveaway WHERE message_id = ? AND guild_id = ?", (message.id, message.guild.id))
                 return
@@ -296,10 +351,11 @@ class Giveaway(commands.Cog):
                 f'<@!{i}>' for i in random.sample(users, k=min(len(users), max(int(re[4]), 1)))
             )
 
-            desc = f"Ended at <t:{int(current_time)}:R>\nHosted by <@{int(re[3])}>\nWinner(s): {winner}"
-            view = CV2(f"🎁 GIVEAWAY ENDED — {re[5]}", desc)
+            content, embed = giveaway_message(
+                ctx.guild, re[5], winner, ends_at, re[3], ended=True
+            )
 
-            await message.edit(view=view)
+            await message.edit(content=content, embed=embed, view=None)
 
             if int(ctx.channel.id) != int(re[6]):
                 await ctx.send(f"{TADAA} Successfully ended the giveaway in <#{int(re[6])}>")
@@ -319,8 +375,13 @@ class Giveaway(commands.Cog):
             message = await ctx.fetch_message(ctx.message.reference.message_id)
 
             users = await self._participants(message)
+            ends_at = float(re[0] or current_time)
 
             if len(users) < 1:
+                content, embed = giveaway_message(
+                    ctx.guild, re[5], "No valid participants", ends_at, re[3], ended=True
+                )
+                await message.edit(content=content, embed=embed, view=None)
                 await message.reply(f"No one won the **{re[5]}** giveaway, due to not enough participants.")
                 await self.cursor.execute("DELETE FROM Giveaway WHERE message_id = ? AND guild_id = ?", (message.id, message.guild.id))
                 return
@@ -329,10 +390,11 @@ class Giveaway(commands.Cog):
                 f'<@!{i}>' for i in random.sample(users, k=min(len(users), max(int(re[4]), 1)))
             )
 
-            desc = f"Ended <t:{int(current_time)}:R>\nHosted by <@{int(re[3])}>\nWinner(s): {winner}"
-            view = CV2(f"🎁 GIVEAWAY ENDED — {re[5]}", desc)
+            content, embed = giveaway_message(
+                ctx.guild, re[5], winner, ends_at, re[3], ended=True
+            )
 
-            await message.edit(view=view)
+            await message.edit(content=content, embed=embed, view=None)
 
             await message.reply(f"💐 Congrats {winner}, you won **{re[5]}!**, Hosted by <@{int(re[3])}>")
             await self.cursor.execute("DELETE FROM Giveaway WHERE message_id = ? AND guild_id = ?", (message.id, message.guild.id))
