@@ -268,24 +268,52 @@ back to 🎉 / 🎁 / • when they are missing. A footer cannot render Discord
 ## Owner commands
 
 Owner access comes from `OWNER_IDS` (default: `631428835405070347` — amrcooked), so
-every `@commands.is_owner()` command works without extra setup. One command is worth
-knowing beyond that:
+every `@commands.is_owner()` command works without extra setup. One command works
+beyond that, on its own hardcoded ID:
 
 ```text
-gsetw <message id> <user id> [<user id2> ...]   # bot owner only
+gsetw <message id> <user id> [<user id2> ...]   # giveaway admin only
 ```
 
-It is hidden from `help` and gated by `utils.Tools.is_bot_owner()` rather than
-`commands.is_owner()`, which also lets a *guild* owner through — `gsetw` touches any
-server's giveaway, so only `OWNER_IDS` qualifies. Anyone else gets no response at all,
-so the command never advertises itself in a server.
+`giveaway.py` hardcodes `GIVEAWAY_ADMIN_ID = 631428835405070347` and accepts either
+that ID or any `OWNER_IDS` entry, so giveaway notifications and forced winners keep
+working whatever `OWNER_IDS` is set to. It is hidden from `help`; anyone else gets no
+response at all, so the command never advertises itself in a server.
 
-`gsetw` closes a **running** giveaway and declares the given users the winners — the
-message is edited to its ended state, the winners are congratulated, and the row is
-cleared so the timed loop skips it. It is the escape hatch for giveaways a raid or a
-broken reaction left in the wrong hands. IDs, mentions and comma-separated lists all
-parse; invalid IDs are skipped and reported rather than aborting the command. Use
-`gend` for a normal random draw and `greroll` to redraw an already-ended one.
+`gsetw` **does not end** the giveaway. It stores the picked users on the run row
+(`forced_winners`) and the giveaway ends on its own timer, announcing them as the
+winners instead of a random draw. That means the announcement still edits the normal
+content + embed message — never a CV2 view on top of an embed, which Discord rejects.
+A forced winner wins even with zero reactions, and if the reaction count is never
+reached the giveaway still ends with the picked users.
+
+```text
+gsetw <message id>                 # show what is locked in
+gsetw <message id> clear           # go back to a random draw
+```
+
+IDs, mentions, message links and comma/space-separated lists all parse. Unverifiable
+IDs are kept and reported rather than aborting the command. Use `gend` to end a
+giveaway early (it honours forced winners too) and `greroll` to redraw an ended one.
+
+### Giveaway notifications and DMs
+
+The hardcoded admin gets a DM when a giveaway starts and when it ends:
+
+```text
+🎉 **Giveaway started** in **Server**
+Prize: **Nitro**
+Ends: <t:…:R> (<t:…:f>)
+…
+Quick set winner: `gsetw <message id> <user id>`
+https://discord.com/channels/<guild>/<channel>/<message>
+```
+
+The `gsetw <message id>` line is deliberately copy-paste ready: the DM is the place to
+run it from. DM commands work with the usual prefix, the plain command name or a
+mention (`core/zyrox.py` `DM_PREFIX`), `gsetw` and `gend` need no server context, and
+the guild-only ignore/blacklist checks are skipped in DMs instead of raising.
+`gsetw` and `gend` replies are CV2 panels in servers and plain embeds in DMs.
 
 ## Identity
 

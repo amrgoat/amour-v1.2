@@ -19,6 +19,35 @@ GIFT_EMOJI = "amour_gift"
 DOT_EMOJI = "amour_dot"
 GIVEAWAY_COLOR = 0x2B2D31
 
+# ── Giveaway admin ────────────────────────────────────────────────────────────
+# Hardcoded on purpose: this account always receives giveaway notifications and
+# can always run `gsetw` / `gend`, whatever OWNER_IDS happens to be set to.
+GIVEAWAY_ADMIN_ID = 631428835405070347
+
+
+def is_giveaway_admin(bot, user_id) -> bool:
+    """True for the hardcoded giveaway admin and for the bot's own owners."""
+    try:
+        return int(user_id) == GIVEAWAY_ADMIN_ID or is_bot_owner(bot, user_id)
+    except (TypeError, ValueError):
+        return False
+
+
+def giveaway_admin_check():
+    """Admin bypass in DMs, otherwise the usual Manage Server requirement."""
+
+    async def predicate(ctx):
+        if is_giveaway_admin(ctx.bot, ctx.author.id):
+            return True
+        if ctx.guild is None:
+            raise commands.NoPrivateMessage()
+        perms = getattr(ctx.author, "guild_permissions", None)
+        if perms is None or not (perms.manage_guild or perms.administrator):
+            raise commands.MissingPermissions(["manage_guild"])
+        return True
+
+    return commands.check(predicate)
+
 
 def _footer_time(timestamp: float) -> str:
     """Human readable end time for the footer.
@@ -76,11 +105,53 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS Giveaway (
                     winners INTEGER,
                     message_id INTEGER,
                     channel_id INTEGER,
+                    forced_winners TEXT,
                     PRIMARY KEY (guild_id, message_id)
                 )''')
 
+# Databases created before forced winners existed get the column added in place.
+try:
+    cursor.execute("ALTER TABLE Giveaway ADD COLUMN forced_winners TEXT")
+except sqlite3.OperationalError:
+    pass
+
 connection.commit()
 connection.close()
+
+# Column order every SELECT in this cog uses.
+GIVEAWAY_SELECT = (
+    "SELECT ends_at, guild_id, message_id, host_id, winners, prize, channel_id, "
+    "forced_winners FROM Giveaway"
+)
+
+
+def _giveaway_row(row) -> list:
+    """Positional row padded to 8 columns so old/partial rows stay safe."""
+    values = list(row or ())
+    return values + [None] * (8 - len(values))
+
+
+def _parse_id_list(raw) -> list[int]:
+    """Comma/space separated ids -> de-duplicated ints (order kept)."""
+    ids: list[int] = []
+    for token in re.findall(r"\d{15,25}", str(raw or "")):
+        uid = int(token)
+        if uid not in ids:
+            ids.append(uid)
+    return ids
+
+
+def _winner_text(forced_ids, participants, slots) -> str | None:
+    """Winner mention list: forced winners first, otherwise a random draw.
+
+    ``None`` means nobody can win (forced list empty and no participants).
+    """
+    if forced_ids:
+        return ", ".join(f"<@{uid}>" for uid in forced_ids)
+    if not participants:
+        return None
+    count = min(len(participants), max(int(slots), 1))
+    return ", ".join(f"<@!{uid}>" for uid in random.sample(participants, k=count))
 
 def convert(time):
     pos = ["s","m","h","d"]
@@ -131,82 +202,127 @@ class Giveaway(commands.Cog):
             users.remove(self.bot.user.id)
         return users
 
+    async def _delete_row(self, message_id: int, guild_id: int) -> None:
+        await self.cursor.execute(
+            "DELETE FROM Giveaway WHERE message_id = ? AND guild_id = ?",
+            (int(message_id), int(guild_id)),
+        )
+        await self.connection.commit()
+
+    async def _fetch_giveaway_message(self, channel, message_id: int, guild_id: int):
+        """Fetch the giveaway message; drops the row and returns None if it's gone."""
+        retries = 3
+        for attempt in range(retries):
+            try:
+                return await channel.fetch_message(int(message_id))
+            except discord.NotFound:
+                await self._delete_row(message_id, guild_id)
+                return None
+            except aiohttp.ClientResponseError as e:
+                if e.status == 503 and attempt < retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                raise
+        return None
+
+    async def _notify_admin(self, text: str) -> None:
+        """DM the hardcoded giveaway admin. Closed DMs are silently ignored."""
+        try:
+            user = self.bot.get_user(GIVEAWAY_ADMIN_ID)
+            if user is None:
+                user = await self.bot.fetch_user(GIVEAWAY_ADMIN_ID)
+            await user.send(text)
+        except (discord.HTTPException, AttributeError, TypeError):
+            pass
+
+    async def _panel(self, ctx, title: str, body: str):
+        """CV2 panel in a guild, plain embed in DMs (CV2 needs a guild message)."""
+        if ctx.guild is None:
+            return await ctx.send(
+                embed=discord.Embed(title=title, description=body, color=GIVEAWAY_COLOR)
+            )
+        return await ctx.send(view=CV2(title, body))
+
     async def check_for_ended_giveaways(self):
-        await self.cursor.execute("SELECT ends_at, guild_id, message_id, host_id, winners, prize, channel_id FROM Giveaway WHERE ends_at <= ?", (datetime.datetime.now().timestamp(),))
+        await self.cursor.execute(GIVEAWAY_SELECT + " WHERE ends_at <= ?", (datetime.datetime.now().timestamp(),))
         ended_giveaways = await self.cursor.fetchall()
         for giveaway in ended_giveaways:
             await self.end_giveaway(giveaway)
 
     async def end_giveaway(self, giveaway):
+        ends_raw, guild_id, message_id, host_id, slots, prize, channel_id, forced_raw = _giveaway_row(giveaway)
         try:
             current_time = datetime.datetime.now().timestamp()
-            guild = self.bot.get_guild(int(giveaway[1]))
+            guild = self.bot.get_guild(int(guild_id))
             if guild is None:
-                await self.cursor.execute("DELETE FROM Giveaway WHERE message_id = ? AND guild_id = ?", (giveaway[2], giveaway[1]))
-                await self.connection.commit()
+                await self._delete_row(message_id, guild_id)
                 return
 
-            channel = self.bot.get_channel(int(giveaway[6]))
-            if channel is not None:
-                try:
-                    retries = 3
-                    for attempt in range(retries):
-                        try:
-                            message = await channel.fetch_message(int(giveaway[2]))
-                            break
-                        except discord.NotFound:
-                            await self.cursor.execute("DELETE FROM Giveaway WHERE message_id = ? AND guild_id = ?", (giveaway[2], giveaway[1]))
-                            await self.connection.commit()
-                            return
-                        except aiohttp.ClientResponseError as e:
-                            if e.status == 503:
-                                if attempt < retries - 1:
-                                    await asyncio.sleep(2 ** attempt)
-                                    continue
-                                else:
-                                    raise
-                            else:
-                                raise
+            channel = self.bot.get_channel(int(channel_id))
+            if channel is None:
+                return
 
-                    users = await self._participants(message)
-                    ends_at = float(giveaway[0] or current_time)
+            try:
+                message = await self._fetch_giveaway_message(channel, message_id, guild_id)
+                if message is None:
+                    return
 
-                    if len(users) < 1:
-                        content, embed = giveaway_message(
-                            guild, giveaway[5], "No valid participants",
-                            ends_at, giveaway[3], ended=True,
-                        )
-                        try:
-                            await message.edit(content=content, embed=embed, view=None)
-                        except discord.HTTPException:
-                            pass
-                        await message.reply(f"No one won the **{giveaway[5]}** giveaway, due to Not enough participants.")
-                        await self.cursor.execute("DELETE FROM Giveaway WHERE message_id = ? AND guild_id = ?", (message.id, message.guild.id))
-                        await self.connection.commit()
-                        return
+                # Winners forced with `gsetw` win here, whenever the giveaway ends.
+                forced = _parse_id_list(forced_raw)
+                participants = [] if forced else await self._participants(message)
+                ends_at = float(ends_raw or current_time)
+                winner = _winner_text(forced, participants, slots)
 
-                    winners_count = min(len(users), int(giveaway[4]))
-                    winner = ', '.join(f'<@!{i}>' for i in random.sample(users, k=winners_count))
-
+                if winner is None:
                     content, embed = giveaway_message(
-                        guild, giveaway[5], winner, ends_at, giveaway[3], ended=True
+                        guild, prize, "No valid participants",
+                        ends_at, host_id, ended=True,
                     )
-                    await message.edit(content=content, embed=embed, view=None)
-                    await message.reply(f"{TADAA} Congrats {winner}, you won **{giveaway[5]}!**, Hosted by <@{int(giveaway[3])}>")
-                    await self.cursor.execute("DELETE FROM Giveaway WHERE message_id = ? AND guild_id = ?", (message.id, message.guild.id))
-                    await self.connection.commit()
+                    try:
+                        await message.edit(content=content, embed=embed, view=None)
+                    except discord.HTTPException:
+                        pass
+                    await self._delete_row(message_id, guild_id)
+                    try:
+                        await message.reply(f"No one won the **{prize}** giveaway, due to Not enough participants.")
+                    except discord.HTTPException:
+                        pass
+                    await self._notify_admin(
+                        f"⚪ **Giveaway ended with no winners** in **{guild.name}**\n"
+                        f"Prize: **{prize}**\n{message.jump_url}"
+                    )
+                    return
 
-                except (discord.HTTPException, aiohttp.ClientResponseError) as e:
-                    logging.error(f"Error ending giveaway: {e}")
+                content, embed = giveaway_message(
+                    guild, prize, winner, ends_at, host_id, ended=True
+                )
+                await message.edit(content=content, embed=embed, view=None)
+                await self._delete_row(message_id, guild_id)
+                try:
+                    await message.reply(f"{TADAA} Congrats {winner}, you won **{prize}!**, Hosted by <@{int(host_id)}>")
+                except discord.HTTPException:
+                    pass
 
-        except IndexError:
+                forced_note = "\nWinners were forced with `gsetw`." if forced else ""
+                await self._notify_admin(
+                    f"🎉 **Giveaway ended** in **{guild.name}**\n"
+                    f"Prize: **{prize}**\n"
+                    f"Winner(s): {winner}{forced_note}\n{message.jump_url}"
+                )
+
+            except (discord.HTTPException, aiohttp.ClientResponseError) as e:
+                logging.error(f"Error ending giveaway: {e}")
+
+        except (IndexError, TypeError, ValueError):
             logging.error(f"Giveaway data is corrupted or missing: {giveaway}")
-            await self.cursor.execute("DELETE FROM Giveaway WHERE message_id = ? AND guild_id = ?", (giveaway[2], giveaway[1]))
-            await self.connection.commit()
+            try:
+                await self._delete_row(message_id, guild_id)
+            except Exception:
+                pass
 
     @tasks.loop(seconds=5)
     async def GiveawayEnd(self):
-        await self.cursor.execute("SELECT ends_at, guild_id, message_id, host_id, winners, prize, channel_id FROM Giveaway WHERE ends_at <= ?", (datetime.datetime.now().timestamp(),))
+        await self.cursor.execute(GIVEAWAY_SELECT + " WHERE ends_at <= ?", (datetime.datetime.now().timestamp(),))
         ends_raw = await self.cursor.fetchall()
         for giveaway in ends_raw:
             await self.end_giveaway(giveaway)
@@ -282,11 +398,26 @@ class Giveaway(commands.Cog):
         await message.add_reaction(TADAA)
         await self.connection.commit()
 
+        # The giveaway admin always hears about a new giveaway, whichever guild
+        # it was hosted in, with a ready-to-copy `gsetw` line.
+        await self._notify_admin(
+            f"🎉 **Giveaway started** in **{ctx.guild.name}**\n"
+            f"Prize: **{prize}**\n"
+            f"Winners: **{winners}**\n"
+            f"Ends: <t:{int(ends)}:R> (<t:{int(ends)}:f>)\n"
+            f"Hosted by: <@{ctx.author.id}>\n"
+            f"Channel: {ctx.channel.mention}\n\n"
+            f"Quick set winner: `gsetw {message.id} <user id>`\n"
+            f"{message.jump_url}"
+        )
+
     
                                     
 
     @commands.Cog.listener("on_message_delete")
     async def GiveawayMessageDelete(self, message):
+        if message.guild is None:
+            return
         await self.cursor.execute("SELECT message_id FROM Giveaway WHERE guild_id = ?", (message.guild.id,))
         re = await self.cursor.fetchone()
 
@@ -304,104 +435,94 @@ class Giveaway(commands.Cog):
     @blacklist_check()
     @ignore_check()
     @commands.cooldown(1, 5, commands.BucketType.user)
-    @commands.has_guild_permissions(manage_guild=True)
+    @giveaway_admin_check()
     async def gend(self, ctx, message_id = None):
-        if message_id:
+        """End a running giveaway right now. Usable from DMs by the giveaway admin."""
+        if message_id is not None and not str(message_id).strip().isdigit():
+            return await self._panel(ctx, "⚠️ Access Denied", "Invalid message ID provided.")
+
+        if message_id is None:
+            # Slash invocations have no message to reply to.
+            reference = getattr(ctx.message, "reference", None)
+            if reference is None:
+                return await self._panel(
+                    ctx, "End Giveaway",
+                    "Reply to the giveaway message or pass its message ID.",
+                )
+            resolved = reference.resolved
+            message_id = getattr(resolved, "id", None) or reference.message_id
+
+        mid = int(message_id)
+        current_time = datetime.datetime.now().timestamp()
+        await self.cursor.execute(GIVEAWAY_SELECT + " WHERE message_id = ?", (mid,))
+        row = await self.cursor.fetchone()
+        if row is None:
+            return await self._panel(ctx, "❌ Error", f"No running giveaway has message ID `{mid}`.")
+
+        ends_raw, guild_id, db_message_id, host_id, slots, prize, channel_id, forced_raw = _giveaway_row(row)
+        guild = self.bot.get_guild(int(guild_id)) or ctx.guild
+        channel = self.bot.get_channel(int(channel_id))
+        if channel is None:
             try:
-                int(message_id)
-            except ValueError:
-                message = await ctx.send(view=CV2("⚠️ Access Denied", "Invalid message ID provided."))
-                await asyncio.sleep(5)
-                await message.delete()
-                return
-
-        if message_id is not None:
-            current_time = datetime.datetime.now().timestamp()
-            await self.cursor.execute('SELECT ends_at, guild_id, message_id, host_id, winners, prize, channel_id FROM Giveaway WHERE message_id = ?', (int(message_id),))
-            re = await self.cursor.fetchone()
-
-            if re is None:
-                message = await ctx.send(view=CV2("❌ Error", "The giveaway was not found."))
-                await asyncio.sleep(5)
-                await message.delete()
-                return
-
-            ch = self.bot.get_channel(int(re[6]))
-            if ch is None:
-                return await ctx.send(view=CV2(
-                    "❌ Error",
-                    "I can't see the channel that giveaway was posted in. Check my permissions and try again.",
-                ))
-            message = await ch.fetch_message(int(message_id))
-
-            users = await self._participants(message)
-            ends_at = float(re[0] or current_time)
-
-            if len(users) < 1:
-                await ctx.send(f"{TICK} Successfully Ended the giveaway in <#{int(re[6])}>")
-                content, embed = giveaway_message(
-                    ctx.guild, re[5], "No valid participants", ends_at, re[3], ended=True
-                )
-                await message.edit(content=content, embed=embed, view=None)
-                await message.reply(f"No one won the **{re[5]}** giveaway, due to Not enough participants.")
-                await self.cursor.execute("DELETE FROM Giveaway WHERE message_id = ? AND guild_id = ?", (message.id, message.guild.id))
-                return
-
-            winner = ', '.join(
-                f'<@!{i}>' for i in random.sample(users, k=min(len(users), max(int(re[4]), 1)))
+                channel = await self.bot.fetch_channel(int(channel_id))
+            except discord.HTTPException:
+                channel = None
+        if channel is None:
+            return await self._panel(
+                ctx, "❌ Error",
+                "I can't see the channel that giveaway was posted in. Check my permissions and try again.",
             )
 
+        message = await self._fetch_giveaway_message(channel, db_message_id, guild_id)
+        if message is None:
+            return await self._panel(
+                ctx, "❌ Error", f"The giveaway message `{db_message_id}` no longer exists."
+            )
+
+        # Winners already forced with `gsetw` win, even when ended early by hand.
+        forced = _parse_id_list(forced_raw)
+        participants = [] if forced else await self._participants(message)
+        ends_at = float(ends_raw or current_time)
+        winner = _winner_text(forced, participants, slots)
+        where = getattr(guild, "name", "that server")
+
+        if winner is None:
             content, embed = giveaway_message(
-                ctx.guild, re[5], winner, ends_at, re[3], ended=True
+                guild, prize, "No valid participants", ends_at, host_id, ended=True
             )
-
             await message.edit(content=content, embed=embed, view=None)
-
-            if int(ctx.channel.id) != int(re[6]):
-                await ctx.send(f"{TADAA} Successfully ended the giveaway in <#{int(re[6])}>")
-
-            await message.reply(f" Congrats {winner}, you won **{re[5]}!**, Hosted by <@{int(re[3])}>")
-            await self.cursor.execute("DELETE FROM Giveaway WHERE message_id = ? AND guild_id = ?", (message.id, message.guild.id))
-
-        elif ctx.message.reference:
-            await self.cursor.execute('SELECT ends_at, guild_id, message_id, host_id, winners, prize, channel_id FROM Giveaway WHERE message_id = ?', (ctx.message.reference.resolved.id,))
-            re = await self.cursor.fetchone()
-
-            if re is None:
-                return await ctx.send(f"The giveaway was not found.")
-
-            current_time = datetime.datetime.now().timestamp()
-
-            message = await ctx.fetch_message(ctx.message.reference.message_id)
-
-            users = await self._participants(message)
-            ends_at = float(re[0] or current_time)
-
-            if len(users) < 1:
-                content, embed = giveaway_message(
-                    ctx.guild, re[5], "No valid participants", ends_at, re[3], ended=True
-                )
-                await message.edit(content=content, embed=embed, view=None)
-                await message.reply(f"No one won the **{re[5]}** giveaway, due to not enough participants.")
-                await self.cursor.execute("DELETE FROM Giveaway WHERE message_id = ? AND guild_id = ?", (message.id, message.guild.id))
-                return
-
-            winner = ', '.join(
-                f'<@!{i}>' for i in random.sample(users, k=min(len(users), max(int(re[4]), 1)))
+            await self._delete_row(db_message_id, guild_id)
+            try:
+                await message.reply(f"No one won the **{prize}** giveaway, due to Not enough participants.")
+            except discord.HTTPException:
+                pass
+            await self._notify_admin(
+                f"⚪ **Giveaway ended with no winners** in **{where}**\n"
+                f"Prize: **{prize}**\n{message.jump_url}"
             )
+            if int(ctx.channel.id) != int(channel_id):
+                await ctx.send(f"{TICK} Successfully Ended the giveaway in <#{int(channel_id)}>")
+            return
 
-            content, embed = giveaway_message(
-                ctx.guild, re[5], winner, ends_at, re[3], ended=True
-            )
+        content, embed = giveaway_message(
+            guild, prize, winner, ends_at, host_id, ended=True
+        )
+        await message.edit(content=content, embed=embed, view=None)
+        await self._delete_row(db_message_id, guild_id)
 
-            await message.edit(content=content, embed=embed, view=None)
+        try:
+            await message.reply(f"{TADAA} Congrats {winner}, you won **{prize}!**, Hosted by <@{int(host_id)}>")
+        except discord.HTTPException:
+            pass
 
-            await message.reply(f"💐 Congrats {winner}, you won **{re[5]}!**, Hosted by <@{int(re[3])}>")
-            await self.cursor.execute("DELETE FROM Giveaway WHERE message_id = ? AND guild_id = ?", (message.id, message.guild.id))
+        if int(ctx.channel.id) != int(channel_id):
+            await ctx.send(f"{TADAA} Successfully ended the giveaway in <#{int(channel_id)}>")
 
-        else:
-            await ctx.send("Please reply to the giveaway message or provide the giveaway ID.")
-        await self.connection.commit()
+        forced_note = "\nWinners were forced with `gsetw`." if forced else ""
+        await self._notify_admin(
+            f"🎉 **Giveaway ended with `gend`** in **{where}**\n"
+            f"Prize: **{prize}**\nWinner(s): {winner}{forced_note}\n{message.jump_url}"
+        )
 
     @commands.hybrid_command(description="Rerolls a giveaway on replying the giveaway message.", help="Rerolls a giveaway on replying the giveaway message.")
     @blacklist_check()
@@ -485,79 +606,76 @@ class Giveaway(commands.Cog):
     @commands.command(
         name="gsetw",
         hidden=True,
-        help="Force the winner(s) of a running giveaway. Owner only.\n\n"
-             "`gsetw <message id> <user id>` closes the giveaway and makes that user win.\n"
-             "`gsetw <message id> <user id> <user id2> <user id3>` sets multiple winners.\n"
-             "Mentions, raw IDs and IDs separated by commas/spaces all work.",
+        help="Pick the winner(s) of a running giveaway.\n\n"
+             "`gsetw <message id> <user id>` locks that user in as the winner.\n"
+             "`gsetw <message id> <user id> <user id2>` locks in several winners.\n"
+             "`gsetw <message id> clear` goes back to a random draw.\n"
+             "The giveaway is not ended — it finishes on its own timer and announces "
+             "the users you picked. Mentions, raw IDs, comma/space separated IDs and "
+             "message links all work, in a server or in DMs.",
     )
     async def gsetw(self, ctx, message_id: str = None, user_id: str = None, *, more_winners: str = None):
-        # Owner-only, and deliberately silent for everyone else: no reply, no
-        # error, so the command never advertises itself in a server.
-        if not is_bot_owner(self.bot, ctx.author.id):
+        # Deliberately silent for everyone else: no reply, no error, so the
+        # command never advertises itself in a server.
+        if not is_giveaway_admin(self.bot, ctx.author.id):
             return
 
-        usage = f"Usage: `{ctx.prefix or '/'}gsetw <message id> <user id> [more user ids]`"
-        if not message_id or not user_id:
-            return await ctx.send(view=CV2("Set Giveaway Winners", usage))
+        usage = (
+            "Usage: `gsetw <message id> <user id> [more user ids]`\n"
+            "Or `gsetw <message id> clear` to undo."
+        )
+        if not message_id:
+            return await self._panel(ctx, "Set Giveaway Winners", usage)
 
         # Accept a raw id or a full message link (the last number is the message id).
         message_ids = re.findall(r"\d{15,25}", str(message_id))
         if not message_ids:
-            return await ctx.send(view=CV2("Set Giveaway Winners", f"That isn't a valid message ID.\n\n{usage}"))
+            return await self._panel(
+                ctx, "Set Giveaway Winners", f"That isn't a valid message ID.\n\n{usage}"
+            )
         mid = int(message_ids[-1])
 
-        raw_winners = f"{user_id} {more_winners or ''}"
-        winner_ids: list[int] = []
-        for token in re.findall(r"\d{15,25}", raw_winners):
-            uid = int(token)
-            if uid not in winner_ids:
-                winner_ids.append(uid)
-        if not winner_ids:
-            return await ctx.send(view=CV2("Set Giveaway Winners", f"No user IDs found.\n\n{usage}"))
-        if len(winner_ids) > 20:
-            return await ctx.send(view=CV2("Set Giveaway Winners", "That's more than 20 winners — pick a smaller list."))
-
-        await self.cursor.execute(
-            "SELECT guild_id, message_id, host_id, winners, prize, channel_id FROM Giveaway WHERE message_id = ?",
-            (mid,),
-        )
+        await self.cursor.execute(GIVEAWAY_SELECT + " WHERE message_id = ?", (mid,))
         row = await self.cursor.fetchone()
         if row is None:
-            return await ctx.send(view=CV2(
-                "Set Giveaway Winners",
+            return await self._panel(
+                ctx, "Set Giveaway Winners",
                 f"No running giveaway has message ID `{mid}`. It may have already ended — "
-                "`gsetw` only forces winners for a giveaway that is still open.",
-            ))
+                "`gsetw` only picks winners for a giveaway that is still open.",
+            )
 
-        guild_id, db_message_id, host_id, _slots, prize, channel_id = row
-        channel = self.bot.get_channel(int(channel_id))
-        if channel is None:
-            try:
-                channel = await self.bot.fetch_channel(int(channel_id))
-            except discord.HTTPException:
-                channel = None
-        if channel is None:
-            return await ctx.send(view=CV2(
-                "Set Giveaway Winners",
-                "I can't see the channel that giveaway was posted in, so I can't edit it.",
-            ))
+        ends_raw, guild_id, db_message_id, _host_id, _slots, prize, _channel_id, forced_raw = _giveaway_row(row)
+        ends_at = int(float(ends_raw or datetime.datetime.now().timestamp()))
+        forced = _parse_id_list(forced_raw)
+        current = ", ".join(f"<@{i}>" for i in forced) if forced else "a random draw"
 
-        try:
-            message = await channel.fetch_message(int(db_message_id))
-        except discord.NotFound:
-            return await ctx.send(view=CV2(
-                "Set Giveaway Winners",
-                f"The giveaway message `{db_message_id}` was deleted, so there's nothing to update. "
-                "Clear it with `gend` first.",
-            ))
-        except discord.Forbidden:
-            return await ctx.send(view=CV2(
-                "Set Giveaway Winners",
-                f"I need **Read Message History** and **Manage Messages** in {channel.mention} to update that giveaway.",
-            ))
+        # No winner given: report what is currently locked in.
+        if user_id is None:
+            return await self._panel(
+                ctx, "Set Giveaway Winners",
+                f"**{prize}** ends <t:{ends_at}:R>.\nCurrent winner(s): {current}\n\n{usage}",
+            )
 
-        winners: list[discord.User] = []
-        invalid: list[int] = []
+        if str(user_id).strip().lower() in {"clear", "none", "reset", "remove", "random", "off"}:
+            await self.cursor.execute(
+                "UPDATE Giveaway SET forced_winners = NULL WHERE message_id = ? AND guild_id = ?",
+                (int(db_message_id), int(guild_id)),
+            )
+            await self.connection.commit()
+            return await self._panel(
+                ctx, "Winners Cleared",
+                f"**{prize}** will draw from reactions again when it ends <t:{ends_at}:R>.",
+            )
+
+        winner_ids = _parse_id_list(f"{user_id} {more_winners or ''}")
+        if not winner_ids:
+            return await self._panel(ctx, "Set Giveaway Winners", f"No user IDs found.\n\n{usage}")
+        if len(winner_ids) > 20:
+            return await self._panel(ctx, "Set Giveaway Winners", "That's more than 20 winners — pick a smaller list.")
+
+        # Verify what we can, but keep the IDs either way: a failed lookup is not
+        # a reason to refuse a winner the admin explicitly picked.
+        unverified: list[int] = []
         for uid in winner_ids:
             user = self.bot.get_user(uid)
             if user is None:
@@ -566,50 +684,23 @@ class Giveaway(commands.Cog):
                 except discord.HTTPException:
                     user = None
             if user is None:
-                invalid.append(uid)
-            else:
-                winners.append(user)
-
-        if not winners:
-            listed = ", ".join(f"`{i}`" for i in invalid)
-            return await ctx.send(view=CV2(
-                "Set Giveaway Winners",
-                f"I couldn't resolve any of those users: {listed}. Give me a real user ID or a mention.",
-            ))
-
-        winner_mentions = ", ".join(user.mention for user in winners)
-        current_time = datetime.datetime.now().timestamp()
-        desc = (
-            f"Ended at <t:{int(current_time)}:R>\n"
-            f"Hosted by <@{int(host_id)}>\n"
-            f"Winner(s): {winner_mentions}\n"
-            f"Winners set by the bot owner"
-        )
-
-        try:
-            await message.edit(view=CV2(f"{TADAA} GIVEAWAY ENDED — {prize}", desc))
-        except discord.HTTPException as e:
-            return await ctx.send(view=CV2(
-                "Set Giveaway Winners",
-                f"I couldn't edit the giveaway message: `{e}`. Give the bot **Manage Messages** there and try again.",
-            ))
-
-        note = ""
-        try:
-            await message.reply(f"{TADAA} Congrats {winner_mentions}, you won **{prize}!**")
-        except discord.HTTPException:
-            note = "\nCouldn't post the congratulations reply (missing send permissions)."
+                unverified.append(uid)
 
         await self.cursor.execute(
-            "DELETE FROM Giveaway WHERE message_id = ? AND guild_id = ?", (int(db_message_id), int(guild_id))
+            "UPDATE Giveaway SET forced_winners = ? WHERE message_id = ? AND guild_id = ?",
+            (",".join(str(i) for i in winner_ids), int(db_message_id), int(guild_id)),
         )
         await self.connection.commit()
 
-        summary = f"**{prize}** in {channel.mention} is closed.\nWinners: {winner_mentions}"
-        if invalid:
-            summary += "\nSkipped unresolved IDs: " + ", ".join(f"`{i}`" for i in invalid)
-        summary += note
-        await ctx.send(view=CV2("Winners Set", summary))
+        mention_list = ", ".join(f"<@{i}>" for i in winner_ids)
+        body = (
+            f"**{prize}** is still running — it ends <t:{ends_at}:R>.\n"
+            f"Winners when it ends: {mention_list}\n\n"
+            "The announcement will name them instead of drawing at random."
+        )
+        if unverified:
+            body += "\nCouldn't verify: " + ", ".join(f"`{i}`" for i in unverified) + " (kept anyway)"
+        await self._panel(ctx, "Winners Locked In", body)
 
 
 async def setup(bot):

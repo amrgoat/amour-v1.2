@@ -18,6 +18,10 @@ import inspect
 
 init(autoreset=True)
 
+# Prefix offered in DMs, where there is no per-guild prefix to read. The empty
+# prefix is kept too so plain `command` messages (the old DM behaviour) work.
+DM_PREFIX = ">"
+
 # Corrected the extensions list
 extensions: List[str] = [
     "cogs"
@@ -108,13 +112,15 @@ class zyrox(commands.AutoShardedBot):
             else:
                 return commands.when_mentioned_or(prefix)(self, message)
         else:
+            # DMs: no guild prefix exists, so accept the DM prefix *and* a bare
+            # command name. "<" would match first and swallow `>gsetw …`.
             async with aiosqlite.connect('db/np.db') as db:
                 async with db.execute("SELECT id FROM np WHERE id = ?", (message.author.id,)) as cursor:
                     row = await cursor.fetchone()
             if row:
-                return commands.when_mentioned_or('?', '')(self, message)
+                return commands.when_mentioned_or('?', DM_PREFIX, '')(self, message)
             else:
-                return commands.when_mentioned_or('')(self, message)
+                return commands.when_mentioned_or(DM_PREFIX, '')(self, message)
 
     async def on_message_edit(self, before, after):
         ctx: Context = await self.get_context(after, cls=Context)

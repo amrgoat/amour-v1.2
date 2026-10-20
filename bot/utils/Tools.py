@@ -110,10 +110,12 @@ def blacklist_check():
       if user_blacklisted:
         return False
 
-      cursor = await db.execute("SELECT 1 FROM guild_blacklist WHERE guild_id = ?", (str(ctx.guild.id),))
-      guild_blacklisted = await cursor.fetchone()
-      if guild_blacklisted:
-        return False
+      # Guild blacklists only exist for guild messages; DMs still check the user.
+      if ctx.guild is not None:
+        cursor = await db.execute("SELECT 1 FROM guild_blacklist WHERE guild_id = ?", (str(ctx.guild.id),))
+        guild_blacklisted = await cursor.fetchone()
+        if guild_blacklisted:
+          return False
 
     return True
 
@@ -182,6 +184,10 @@ def bot_owner_check():
 
 def ignore_check():
     async def predicate(ctx):
+        # Ignore lists are per guild; nothing is ignored in DMs.
+        if ctx.guild is None:
+            return True
+
         data = await get_ignore_data(ctx.guild.id)
         ch = data["channel"]
         iuser = data["user"]

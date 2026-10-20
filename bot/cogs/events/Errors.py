@@ -31,27 +31,29 @@ class Errors(Cog):
       return
 
     if isinstance(error, commands.CheckFailure):
-      data = await get_ignore_data(ctx.guild.id)
-      ch = data["channel"]
-      iuser = data["user"]
-      cmd = data["command"]
-      buser = data["bypassuser"]
+      # Guild ignore lists don't exist in DMs — fall through to the handlers below.
+      if ctx.guild is not None:
+        data = await get_ignore_data(ctx.guild.id)
+        ch = data["channel"]
+        iuser = data["user"]
+        cmd = data["command"]
+        buser = data["bypassuser"]
 
-      if str(ctx.author.id) in buser:
-        return
+        if str(ctx.author.id) in buser:
+          return
 
-      if str(ctx.channel.id) in ch:
-        await ctx.reply(f"{ctx.author.mention} **This channel was in ignored list try my commands on other channel**.",
-                        delete_after=8)
-        return
+        if str(ctx.channel.id) in ch:
+          await ctx.reply(f"{ctx.author.mention} **This channel was in ignored list try my commands on other channel**.",
+                          delete_after=8)
+          return
 
-      if str(ctx.author.id) in iuser:
-        await ctx.reply(f"{ctx.author.mention} **You are set as an ignored user for this guild. Please try my commands in a different guild.**", delete_after=8)
-        return
+        if str(ctx.author.id) in iuser:
+          await ctx.reply(f"{ctx.author.mention} **You are set as an ignored user for this guild. Please try my commands in a different guild.**", delete_after=8)
+          return
 
-      if ctx.command.name in cmd or any(alias in cmd for alias in ctx.command.aliases):
-        await ctx.reply(f"{ctx.author.mention} **This command is ignored in this guild. Please use other commands or try this command in a different guild**", delete_after=8)
-        return
+        if ctx.command.name in cmd or any(alias in cmd for alias in ctx.command.aliases):
+          await ctx.reply(f"{ctx.author.mention} **This command is ignored in this guild. Please use other commands or try this command in a different guild**", delete_after=8)
+          return
 
     if isinstance(error, commands.NoPrivateMessage):
       embed = discord.Embed(color=0xFF0000, description="You can't use my commands in DMs.")
