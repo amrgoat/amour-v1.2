@@ -260,10 +260,11 @@ footer       Ends | <end time>
 ```
 
 The header says **Giveaway Started** while it runs and **Giveaway Ended** once it
-closes. `amour_giveaway`, `amour_gift` and `amour_dot` are looked up by name in the
-guild (`utils.emoji.guild_emoji`), so each server can use its own uploads and fall
-back to 🎉 / 🎁 / • when they are missing. A footer cannot render Discord
-`<t:…>` timestamps, so the footer is a readable UTC time.
+closes. `amour_giveaway` is looked up by name in the guild (`utils.emoji.guild_emoji`)
+and falls back to 🎉; the gift and dot use the shared `GIFT` / `DOT` emoji from
+`utils/emoji.py`, still overridable per guild by an emoji named `st_gift` / `green_dot`.
+A footer cannot render Discord `<t:…>` timestamps, so the footer is a readable UTC
+time.
 
 ## Owner commands
 
@@ -296,6 +297,10 @@ IDs, mentions, message links and comma/space-separated lists all parse. Unverifi
 IDs are kept and reported rather than aborting the command. Use `gend` to end a
 giveaway early (it honours forced winners too) and `greroll` to redraw an ended one.
 
+`gend` is **not** part of the hardcoded admin access: it needs Manage Server (or
+Administrator) in the guild, so the giveaway admin can only pick winners with `gsetw`
+and has no separate shortcut to stop a giveaway by hand.
+
 ### Giveaway notifications and DMs
 
 The hardcoded admin gets a DM when a giveaway starts and when it ends:
@@ -311,9 +316,11 @@ https://discord.com/channels/<guild>/<channel>/<message>
 
 The `gsetw <message id>` line is deliberately copy-paste ready: the DM is the place to
 run it from. DM commands work with the usual prefix, the plain command name or a
-mention (`core/zyrox.py` `DM_PREFIX`), `gsetw` and `gend` need no server context, and
-the guild-only ignore/blacklist checks are skipped in DMs instead of raising.
-`gsetw` and `gend` replies are CV2 panels in servers and plain embeds in DMs.
+mention (`core/zyrox.py` `DM_PREFIX`), `gsetw` needs no server context, and the
+guild-only ignore/blacklist checks are skipped in DMs instead of raising. `gsetw`
+replies are CV2 panels in servers and plain embeds in DMs. `gend` is server-only
+(Manage Server), because it is ordinary guild management rather than part of the
+admin toolset.
 
 ## Identity
 

@@ -5,23 +5,21 @@ import aiosqlite, random, re, typing
 import sqlite3
 import asyncio
 import discord, logging
-from utils.emoji import TADAA, TICK, guild_emoji
+from utils.emoji import TADAA, TICK, guild_emoji, DOT, GIFT
 from discord.utils import get
 from utils.Tools import *
 import os
 import aiohttp
 from utils.cv2 import CV2
 
-# Giveaway message look — custom emoji are looked up by name in the guild so
-# every server keeps its own :amour_giveaway: / :amour_gift: / :amour_dot: set.
+# Giveaway message look — the banner is still looked up by name in the guild
+# (:amour_giveaway:), while the gift and dot use the shared global emoji
+# (`GIFT` / `DOT`) with a per-guild override when a server uploaded its own.
 GIVEAWAY_EMOJI = "amour_giveaway"
-GIFT_EMOJI = "amour_gift"
-DOT_EMOJI = "amour_dot"
+GIVEAWAY_GIFT = "st_gift"
+GIVEAWAY_DOT = "green_dot"
 GIVEAWAY_COLOR = 0x2B2D31
 
-# ── Giveaway admin ────────────────────────────────────────────────────────────
-# Hardcoded on purpose: this account always receives giveaway notifications and
-# can always run `gsetw` / `gend`, whatever OWNER_IDS happens to be set to.
 GIVEAWAY_ADMIN_ID = 631428835405070347
 
 
@@ -33,12 +31,16 @@ def is_giveaway_admin(bot, user_id) -> bool:
         return False
 
 
-def giveaway_admin_check():
-    """Admin bypass in DMs, otherwise the usual Manage Server requirement."""
+def giveaway_manager_check():
+    """Manage Server (or Administrator) in the guild the giveaway lives in.
+
+    Neither the hardcoded giveaway admin nor the bot-owner shortcut is granted
+    here on purpose: that account is only meant to pick winners with `gsetw`.
+    Ending a giveaway is ordinary server management, so it needs real guild
+    permissions and cannot be run from DMs.
+    """
 
     async def predicate(ctx):
-        if is_giveaway_admin(ctx.bot, ctx.author.id):
-            return True
         if ctx.guild is None:
             raise commands.NoPrivateMessage()
         perms = getattr(ctx.author, "guild_permissions", None)
@@ -65,8 +67,8 @@ def _footer_time(timestamp: float) -> str:
 def giveaway_message(guild, prize, winners_text, ends_at, host_id, *, ended: bool):
     """Build the (content, embed) pair used for a giveaway message."""
     banner = guild_emoji(guild, GIVEAWAY_EMOJI, "🎉")
-    gift = guild_emoji(guild, GIFT_EMOJI, "🎁")
-    dot = guild_emoji(guild, DOT_EMOJI, "•")
+    gift = guild_emoji(guild, GIVEAWAY_GIFT, GIFT)
+    dot = guild_emoji(guild, GIVEAWAY_DOT, DOT)
 
     state = "Giveaway Ended" if ended else "Giveaway Started"
     content = f"{banner} **{state}** {banner}"
@@ -435,9 +437,12 @@ class Giveaway(commands.Cog):
     @blacklist_check()
     @ignore_check()
     @commands.cooldown(1, 5, commands.BucketType.user)
-    @giveaway_admin_check()
+    @giveaway_manager_check()
     async def gend(self, ctx, message_id = None):
-        """End a running giveaway right now. Usable from DMs by the giveaway admin."""
+        """End a running giveaway right now.
+
+        Needs Manage Server: the hardcoded giveaway admin only gets `gsetw`.
+        """
         if message_id is not None and not str(message_id).strip().isdigit():
             return await self._panel(ctx, "⚠️ Access Denied", "Invalid message ID provided.")
 
