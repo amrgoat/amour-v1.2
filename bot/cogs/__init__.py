@@ -86,6 +86,7 @@ from .zyrox.sticky import _sticky
 from .zyrox.verify import _verify
 from .zyrox.joindm import _joindm
 from .zyrox.birth import _birth
+from .zyrox.cv2 import _cv2
 
 
 from .moderation.ban import Ban
@@ -181,6 +182,7 @@ async def setup(bot: zyrox):
   await bot.add_cog(_verify(bot))
   await bot.add_cog(_joindm(bot))
   await bot.add_cog(_birth(bot))
+  await bot.add_cog(_cv2(bot))
 
 
   

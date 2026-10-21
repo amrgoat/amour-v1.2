@@ -17,6 +17,6 @@ class _sticky(commands.Cog):
 
     @commands.group()
     async def __Sticky__(self, ctx: commands.Context):
-        """`stickymessage` , `stickymessage edit` , `stickymessage list` , `stickymessage remove` , `stickymessage setup`"""
+        """`sticky` , `sticky setup` , `sticky edit` , `sticky list` , `sticky remove`"""
         pass
 
