@@ -13,4 +13,4 @@ class _joindm(commands.Cog):
               return emoji, label, description
     @commands.group()
     async def __Joindm__(self, ctx: commands.Context):
-        """`joindm enable` , `joindm disable` , `joindm message` , `joindm test`"""
+        """`joindm` , `joindm disable` , `joindm enable` , `joindm message` , `joindm test`"""

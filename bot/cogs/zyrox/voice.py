@@ -17,8 +17,7 @@ class _voice(commands.Cog):
 
     @commands.group()
     async def __Voice__(self, ctx: commands.Context):
-        """
-        `voice` , `voice kick` , `voice kickall` , `voice mute` , `voice muteall` , `voice unmute` , `voice unmuteall` , `voice deafen` , `voice deafenall` , `voice undeafen` , `voice undeafenall` , `voice move` , `voice moveall` , `voice pull` , `voice pullall` , `voice lock` , `voice unlock` , `voice private` , `voice unprivate`\n\n**__VC Autorole__**\n`vcrole add` , `vcrole remove` , `vcrole config`"""
+        """`voice` , `voice deafen` , `voice deafenall` , `voice kick` , `voice kickall` , `voice lock` , `voice move` , `voice moveall` , `voice mute` , `voice muteall` , `voice private` , `voice pull` , `voice pullall` , `voice undeafen` , `voice undeafenall` , `voice unlock` , `voice unmute` , `voice unmuteall` , `voice unprivate`"""
 
 
 

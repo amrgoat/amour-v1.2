@@ -185,21 +185,20 @@ class View(LayoutView):
                 used_labels.add(label)
                 options.append(discord.SelectOption(label=label, emoji=emoji, description=description))
 
-                fields = []
+                # The category cogs only hold one documentation group; its text
+                # is the command list, so show it as the page body instead of
+                # printing the internal `__Category__` command name.
+                lines = []
                 for command in cog.get_commands():
-                    params = ""
-                    for param in command.clean_params:
-                        if param not in ["self", "ctx"]:
-                            params += f" <{param}>"
-                    help_text = command.help or "No description available"
-                    if len(help_text) > 1020:
-                        help_text = help_text[:1017] + "..."
-                    fields.append((f"{command.name}{params}", f"{help_text}\n•"))
+                    lines.append(command.help or "No description available")
+                body = "\n".join(lines)
+                if len(body) > 3900:  # Discord's limit for one CV2 message
+                    body = body[:3897] + "..."
 
                 pages.append({
-                    'title': f"{emoji} {original_label}",
-                    'description': '',
-                    'fields': fields,
+                    'title': f"{emoji.strip()} {original_label}",
+                    'description': body,
+                    'fields': [],
                     'footer': None
                 })
                 total_pages += 1

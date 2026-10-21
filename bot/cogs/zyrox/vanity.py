@@ -25,4 +25,4 @@ class _vanity(commands.Cog):
 
     async def __Vanity__(self, ctx: commands.Context):
 
-        """`>vanityroles setup` , `>vanityroles reset `, `>vanityroles show` ,"""
+        """`vanityroles` , `vanityroles reset` , `vanityroles setup` , `vanityroles show`"""

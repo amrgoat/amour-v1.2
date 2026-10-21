@@ -17,4 +17,4 @@ class _general(commands.Cog):
 
     @commands.group()
     async def __General__(self, ctx: commands.Context):
-        """`status` , `afk` , `avatar` , `banner` , `servericon` , `membercount` , `poll` , `hack` , `token` , `users` , `wizz` , `urban` , `rickroll` , `hash` , `snipe` , `users` , `list boosters` , `list inrole` , `list emojis` , `list bots` , `list admins` , `list invoice` , `list mods` , `list early` , `list activedeveloper` , `list createpos` , `list roles` , `calculator`"""
+        """`avatar` , `hack` , `hash` , `invite` , `membercount` , `poll` , `rickroll` , `servericon` , `token` , `urban` , `users` , `wizz` , `status` , `afk` , `snipe` , `calculator` , `list` , `list activedeveloper` , `list admins` , `list bans` , `list boosters` , `list bots` , `list createdat` , `list early` , `list emojis` , `list inrole` , `list invoice` , `list joinedat` , `list moderators` , `list roles`"""

@@ -17,4 +17,4 @@ class _ignore(commands.Cog):
 
     @commands.group()
     async def __Ignore__(self, ctx: commands.Context):
-        """`ignore` , `ignore command add` , `ignore command remove` , `ignore command show` , `ignore channel add` , `ignore channel remove` , `ignore channel show` , `ignore user add` , `ignore user remove` , `ignore user show` , `ignore bypass add` , `ignore bypass show` , `ignore bypass remove`"""
+        """`ignore` , `ignore bypass` , `ignore bypass add` , `ignore bypass remove` , `ignore bypass show` , `ignore channel` , `ignore channel add` , `ignore channel remove` , `ignore channel show` , `ignore command` , `ignore command add` , `ignore command remove` , `ignore command show` , `ignore user` , `ignore user add` , `ignore user remove` , `ignore user show`"""

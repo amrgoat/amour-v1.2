@@ -25,4 +25,4 @@ class _J2C(commands.Cog):
 
     async def __J2C__(self, ctx: commands.Context):
 
-        """`>j2csetup`, `>j2creset`"""
+        """`j2csetup` , `j2creset`"""

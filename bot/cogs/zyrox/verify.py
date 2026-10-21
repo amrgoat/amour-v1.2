@@ -16,7 +16,7 @@ class _verify(commands .Cog ):
 
     @commands .group ()
     async def __Verification__ (self ,ctx :commands .Context ):
-        """`verification setup`, `verification status`, `verification enable`, `verification disable`, `verification logs`, `verification reset`, `verification verify`, `verification fix`"""
+        """`verification` , `verification disable` , `verification enable` , `verification fix` , `verification logs` , `verification reset` , `verification setup` , `verification status` , `verification verify`"""
         pass 
 
 async def setup (bot ):

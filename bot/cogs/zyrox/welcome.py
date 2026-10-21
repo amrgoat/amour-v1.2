@@ -17,4 +17,4 @@ class _welcome(commands.Cog):
 
     @commands.group()
     async def __Welcomer__(self, ctx: commands.Context):
-        """`greet setup` , `greet reset`, `greet channel` , `greet edit` , `greet test` , `greet config` , `greet autodeletete` , `greet`"""
+        """`greet` , `greet autodelete` , `greet channel` , `greet config` , `greet edit` , `greet reset` , `greet setup` , `greet test` , `fastgreet_add` , `fastgreet_list` , `fastgreet_remove`"""

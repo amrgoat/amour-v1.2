@@ -1,6 +1,6 @@
 from utils.branding import bot_name, support_link
 import discord
-from utils.emoji import ARROWRED, BOOST, LEVEL_UP, LOADINGRED, MESSAGE, NEW, PIN, SEED, STAR, SWORD, SYSTEM, THUNDER, WIFI, ZARROW, ZBAN, ZBOT, ZCIRCLE, ZCIRCLE_ALT1, ZCLOUD, ZCOUNTING, ZMODULE, ZPEOPLE, ZSAFE, ZTADA, ZUNMUTE, ZWRENCH
+from utils.emoji import ARROWRED, LOADINGRED, ZARROW, ZCLOUD, ZMODULE
 from discord.ext import commands
 from discord import app_commands, Interaction
 from difflib import get_close_matches
@@ -94,45 +94,39 @@ class HelpCommand(commands.HelpCommand):
 
     data = await getConfig(self.context.guild.id)
     prefix = data["prefix"]
-    filtered = await self.filter_commands(self.context.bot.walk_commands(), sort=True)
+
+    # Keep the pages in the order the cogs were loaded instead of walk order,
+    # so the home list and the dropdown read the same way.
+    load_order = {cog: index for index, cog in enumerate(self.context.bot.cogs.values())}
+    mapping = dict(sorted(mapping.items(), key=lambda item: load_order.get(item[0], 999)))
+
+    # Built from the same cogs the category dropdown uses, so a removed feature
+    # can never linger on the home page as a dead category.
+    categories = []
+    for cog in mapping:
+        if "help_custom" not in dir(cog):
+            continue
+        emoji, label, _ = cog.help_custom()
+        categories.append(f"{emoji.strip()} `»` {label}")
+
+    visible_commands = [
+        command for command in self.context.bot.walk_commands()
+        if not command.hidden and not command.qualified_name.startswith("__")
+    ]
 
     embed = CV2Embed(
         description=(
          f"**{ARROWRED} __Start {bot_name(self.context.bot)} Today__**\n"        
-         f"**{ZARROW} Type {prefix}help <command> for details**\n"
+         f"**{ZARROW} Type {prefix}help <command> or pick a category below**\n"
          f"**{ZARROW} Server Prefix:** `{prefix}`\n"
-         f"**{ZARROW} Total Commands:** `{len(set(self.context.bot.walk_commands()))}`\n"),         
+         f"**{ZARROW} Total Commands:** `{len(visible_commands)}`\n"),         
         color=0xFF0000)
-    
-    embed.add_field(
-        name=f"{ZCLOUD} Main Features",
-        value=f">>> \n {ZSAFE} `»` Security\n" 
-              f" {ZBOT} `»` Security & Filters\n"
-              f" {ZWRENCH} `»` Utility\n" 
-              f" {WIFI} `»` Autoreact & responder\n"
-              f" {SWORD} `»` Moderation\n"
-              f" {ZPEOPLE} `»` Autorole & Invc\n"
-              f" {ZBAN} `»` Ignore Channels\n"
-              f" {WIFI} `»` Server\n"
-              f" {ZUNMUTE} `»` Voice\n"
-              f" {SEED} `»` Welcomer\n"  
-              f" {ZTADA} `»` Giveaway\n"
-              f" {ZMODULE} `»` Components V2 {NEW}\n"              f" {ZPEOPLE} `»` Invite Tracker {NEW}\n"
-    )
-    
-    embed.add_field(
-        name=f" {ZMODULE} Extra Features",
-        value=f">>> \n {STAR} `»` Vanityroles\n"
-              f" {ZCOUNTING} `»` Counting {NEW}\n"
-              f" {SYSTEM} `»` J2C {NEW}\n"
-              f" {BOOST} `»` Boost {NEW}\n"
-              f" {LEVEL_UP} `»` Leveling {NEW}\n"
-              f" {PIN} `»` Sticky {NEW}\n"
-              f" {THUNDER} `»` Verification {NEW}\n"
-              f" {MESSAGE} `»` Joindm {NEW}\n"
-              f" {ZCIRCLE} `»` Birthday {NEW}\n"
-              f" {ZCIRCLE_ALT1} `»` Customrole\n"           
-    )
+
+    split = (len(categories) + 1) // 2
+    main_categories = "\n".join(categories[:split]) or "No categories loaded."
+    extra_categories = "\n".join(categories[split:]) or "—"
+    embed.add_field(name=f"{ZCLOUD} Main Features", value=f">>> \n{main_categories}")
+    embed.add_field(name=f"{ZMODULE} Extra Features", value=f">>> \n{extra_categories}")
 
     embed.set_footer(
       text=f"Requested By {self.context.author} | {support_link('Support')}",

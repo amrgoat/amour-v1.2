@@ -17,5 +17,5 @@ class __boost(commands .Cog ):
 
     @commands .group ()
     async def __Boost__ (self ,ctx :commands .Context ):
-        """`boost setup` , `boost message` , `boost channel` , `boostrole` , `boost config`"""
+        """`boost` , `boost autodel` , `boost channel` , `boost channel add` , `boost channel remove` , `boost config` , `boost embed` , `boost image` , `boost message` , `boost ping` , `boost reset` , `boost test` , `boost thumbnail` , `boostrole` , `boostrole add` , `boostrole config` , `boostrole remove` , `boostrole reset`"""
         pass
