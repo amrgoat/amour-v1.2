@@ -3,7 +3,10 @@ from discord.ext import commands, tasks
 import json
 import datetime
 import asyncio
+import codecs
+import logging
 import os
+import tempfile
 from discord.ui import LayoutView, TextDisplay, Separator, Container
 from utils.cv2 import CV2, build_container
 
@@ -17,17 +20,96 @@ class CV2(LayoutView):
                 items.append(TextDisplay(str(s)))
         self.add_item(build_container(*items))
 
+# Byte order marks, longest first: UTF-32 LE also starts with the UTF-16 LE BOM.
+_BOMS = (
+    (codecs.BOM_UTF32_LE, "utf-32"),
+    (codecs.BOM_UTF32_BE, "utf-32"),
+    (codecs.BOM_UTF8, "utf-8-sig"),
+    (codecs.BOM_UTF16_LE, "utf-16"),
+    (codecs.BOM_UTF16_BE, "utf-16"),
+)
+
+
+def _decode_json_bytes(raw: bytes) -> str:
+    """Decode a JSON file saved as UTF-8, UTF-16 or UTF-32, with or without a BOM."""
+    for bom, encoding in _BOMS:
+        if raw.startswith(bom):
+            return raw.decode(encoding)
+    # BOM-less UTF-16 (some Windows tools write it) shows up as NUL bytes.
+    if b"\x00" in raw:
+        for encoding in ("utf-16-le", "utf-16-be"):
+            try:
+                return raw.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+    for encoding in ("utf-8", "cp1252"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("latin-1")
+
+
 def read_db(filename):
-    """Read the JSON database file."""
-    if os.path.exists(filename):
-        with open(filename, 'r') as f:
-            return json.load(f)
-    return {}
+    """Read a JSON database without crashing on a broken file.
+
+    Editors and Windows tooling (PowerShell's ``Out-File``, for example) can
+    save these files as UTF-16 with a BOM, which the old plain
+    ``open(filename, 'r')`` + ``json.load`` rejected with
+    ``UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff`` — that killed
+    the ``check_birthdays`` background task. Files are read in binary and
+    decoded by BOM, and an unreadable body now logs a warning and counts as
+    empty instead of raising.
+    """
+    try:
+        with open(filename, "rb") as f:
+            raw = f.read()
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        logging.warning("Could not read %s: %s", filename, exc)
+        return {}
+
+    if not raw.strip():
+        return {}
+
+    try:
+        data = json.loads(_decode_json_bytes(raw))
+    except (UnicodeDecodeError, ValueError) as exc:
+        logging.warning("Ignoring unreadable JSON database %s: %s", filename, exc)
+        return {}
+
+    if not isinstance(data, dict):
+        logging.warning(
+            "Ignoring %s: expected a JSON object, got %s", filename, type(data).__name__
+        )
+        return {}
+    return data
+
 
 def write_db(filename, data):
-    """Write data to the JSON database file."""
-    with open(filename, 'w') as f:
-        json.dump(data, f, indent=4)
+    """Write the JSON database as UTF-8, atomically.
+
+    The old version used the platform's default encoding, so a Windows host
+    could rewrite the file as UTF-16 and break the next read. A temporary
+    file plus ``os.replace`` keeps a half-written database from being read.
+    """
+    directory = os.path.dirname(os.path.abspath(filename))
+    os.makedirs(directory, exist_ok=True)
+    handle, temp_path = tempfile.mkstemp(dir=directory, prefix=".tmp-", suffix=".json")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(data, f, indent=4)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(temp_path, 0o644)
+        os.replace(temp_path, filename)
+    except BaseException:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise
 
 class Birthdays(commands.Cog):
     """Handle birthday notifications and setup."""
@@ -150,20 +232,41 @@ class Birthdays(commands.Cog):
         guild_settings = read_db('jsondb/birthday_logs.json')
 
         for user_id, birthday in db.items():
-            if birthday.startswith(today_date):
+            # One malformed entry must not stop everyone else's birthday.
+            if not isinstance(birthday, str) or not birthday.startswith(today_date):
+                continue
+            try:
                 user = self.client.get_user(int(user_id))
-                if user:
-                    for guild_id, settings in guild_settings.items():
-                        channel_id = settings.get("birthday_channel_id")
-                        role_id = settings.get("birthday_role_id")
-                        if channel_id:
-                            channel = self.client.get_channel(channel_id)
-                            if channel:
-                                await channel.send(view=CV2("Happy Birthday! 🎉", f"Wishing {user.mention} a fantastic birthday!"))
-                                role = discord.utils.get(channel.guild.roles, id=role_id)
-                                if role:
-                                    await user.add_roles(role)
-                                break
+            except (TypeError, ValueError):
+                continue
+            if user is None:
+                continue
+
+            for settings in guild_settings.values():
+                if not isinstance(settings, dict):
+                    continue
+                channel_id = settings.get("birthday_channel_id")
+                role_id = settings.get("birthday_role_id")
+                if not channel_id:
+                    continue
+                try:
+                    channel_id = int(channel_id)
+                except (TypeError, ValueError):
+                    continue
+                channel = self.client.get_channel(channel_id)
+                if channel is None:
+                    continue
+                try:
+                    await channel.send(view=CV2("Happy Birthday! 🎉", f"Wishing {user.mention} a fantastic birthday!"))
+                    role = discord.utils.get(channel.guild.roles, id=role_id)
+                    if role:
+                        await user.add_roles(role)
+                except (discord.HTTPException, AttributeError) as exc:
+                    logging.warning(
+                        "Could not announce the birthday of %s in %s: %s",
+                        user_id, channel_id, exc,
+                    )
+                break
 
     @check_birthdays.before_loop
     async def before_check_birthdays(self):
