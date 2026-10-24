@@ -22,6 +22,7 @@ from __future__ import annotations
 import io
 import json
 import re
+import unicodedata
 from typing import Any, Optional
 
 import discord
@@ -1073,6 +1074,254 @@ class MenuOptionsView(ui.View):
         await interaction.response.edit_message(content=panel.content(), view=panel)
 
 
+_CUSTOM_EMOJI_RE = re.compile(r"<a?:[A-Za-z0-9_]{2,32}:\d{17,20}>")
+
+
+def _is_normal_emoji(value: str) -> bool:
+    """True when ``value`` looks like one (or a few) unicode emojis.
+
+    ``discord.PartialEmoji.from_str`` happily accepts any text, so typed input
+    is checked here instead: symbols only, plus the joiners/variation selectors
+    that glue emoji sequences together.
+    """
+    if not value or len(value) > 32:
+        return False
+    if re.fullmatch(r"[0-9#*]\ufe0f?\u20e3", value):  # keycaps such as 1️⃣
+        return True
+    symbols = 0
+    for char in value:
+        if char in "\u200d\ufe0f\u20e3":  # ZWJ, variation selector, keycap
+            continue
+        if char.isspace() or (char.isascii() and char.isalnum()):
+            return False  # plain text next to an emoji
+        if unicodedata.category(char) not in ("So", "Sk"):
+            return False
+        symbols += 1
+    return symbols > 0
+
+
+def _emoji_input(raw: str) -> str | None:
+    """Return the emoji string to store for a typed value, or ``None``."""
+    raw = (raw or "").strip()
+    if not raw or len(raw) > 64:
+        return None
+    if raw.startswith("<") or raw.endswith(">"):
+        match = _CUSTOM_EMOJI_RE.fullmatch(raw)
+        return match.group(0) if match else None
+    try:
+        parsed = discord.PartialEmoji.from_str(raw)
+    except (ValueError, TypeError):
+        return None
+    return raw if _is_normal_emoji(parsed.name or "") else None
+
+
+class NormalOptionEmojiModal(_BuilderModal):
+    """Type a normal (unicode) emoji for one menu option."""
+
+    def __init__(
+        self,
+        builder: "CV2Builder",
+        option: dict[str, Any],
+        view: "OptionEmojiView | None" = None,
+    ):
+        super().__init__(builder, title="Normal emoji")
+        self.option = option
+        self.picker = view
+        self.emoji_input = ui.TextInput(
+            default=option.get("emoji"),
+            placeholder="🎉",
+            max_length=64,
+            required=True,
+        )
+        self.add_item(
+            ui.Label(
+                text="Emoji",
+                description="Paste a normal emoji (e.g. 🎉). Server emojis are picked from the menu instead.",
+                component=self.emoji_input,
+            )
+        )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not await self._author_ok(interaction):
+            return
+        emoji = _emoji_input(self.emoji_input.value)
+        if emoji is None:
+            await interaction.response.send_message(
+                "That isn't a valid emoji — send one emoji, e.g. 🎉.", ephemeral=True
+            )
+            return
+        self.option["emoji"] = emoji
+        await interaction.response.defer()
+        await self.builder.refresh()
+        # Update the picker message so its status shows the new emoji. A modal
+        # submit can't edit through its response, so edit the source message.
+        if self.picker is not None:
+            self.picker.rebuild()
+            try:
+                await interaction.message.edit(
+                    content=self.picker.status(), view=self.picker
+                )
+            except (discord.HTTPException, AttributeError):
+                pass
+
+
+class OptionEmojiView(ui.View):
+    """Set the emoji of one menu option from the server's emojis or a normal one.
+
+    The selected option lives inside the builder's data, so edits apply in place.
+    """
+
+    def __init__(self, builder: "CV2Builder", block_index: int):
+        super().__init__(timeout=300)
+        self.builder = builder
+        self.block_index = block_index
+        self.option_index = 0
+        self.rebuild()
+
+    @property
+    def options(self) -> list[dict[str, Any]]:
+        blocks = self.builder.data["blocks"]
+        if not 0 <= self.block_index < len(blocks):
+            return []
+        return blocks[self.block_index].get("options") or []
+
+    def current_option(self) -> dict[str, Any] | None:
+        options = self.options
+        if 0 <= self.option_index < len(options):
+            return options[self.option_index]
+        return None
+
+    def rebuild(self) -> None:
+        self.clear_items()
+        options = self.options
+        if not options:
+            return
+        if not 0 <= self.option_index < len(options):
+            self.option_index = 0
+
+        option_select = ui.Select(
+            placeholder="Which option?",
+            options=[
+                discord.SelectOption(
+                    label=_short(f"{i + 1}. {opt['label']}", 100),
+                    value=str(i),
+                    emoji=opt.get("emoji"),
+                    default=i == self.option_index,
+                )
+                for i, opt in enumerate(options)
+            ][:25],
+        )
+        option_select.callback = self.pick_option
+        self.add_item(option_select)
+
+        guild = self.builder.ctx.guild
+        emojis = list(getattr(guild, "emojis", []) or [])
+        if emojis:
+            emoji_select = ui.Select(
+                placeholder="Pick a server emoji",
+                options=[
+                    discord.SelectOption(
+                        label=_short(emoji.name or "emoji", 100),
+                        value=str(emoji.id),
+                        emoji=emoji,
+                    )
+                    for emoji in emojis[:25]
+                ],
+            )
+            emoji_select.callback = self.pick_emoji
+            self.add_item(emoji_select)
+        else:
+            note = ui.Button(
+                label="No server emojis to pick",
+                style=discord.ButtonStyle.secondary,
+                disabled=True,
+            )
+            self.add_item(note)
+
+        normal = ui.Button(label="Type normal emoji", style=discord.ButtonStyle.primary)
+        normal.callback = self.type_normal
+        self.add_item(normal)
+
+        clear = ui.Button(label="Clear emoji", style=discord.ButtonStyle.danger)
+        clear.callback = self.clear_emoji
+        self.add_item(clear)
+
+        done = ui.Button(label="Done", style=discord.ButtonStyle.secondary)
+        done.callback = self.close
+        self.add_item(done)
+
+    def status(self) -> str:
+        option = self.current_option()
+        if option is None:
+            return "That option is gone."
+        emoji = option.get("emoji") or "*none*"
+        return f"**{option['label']}** — emoji: {emoji}"
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.builder.ctx.author.id:
+            await interaction.response.send_message(
+                "This builder belongs to someone else.", ephemeral=True
+            )
+            return False
+        return True
+
+    async def _refresh(self, interaction: discord.Interaction, note: str | None = None) -> None:
+        self.rebuild()
+        content = self.status()
+        if note:
+            content = f"{content}\n{note}"
+        await self.builder.refresh()
+        await interaction.response.edit_message(content=content, view=self)
+
+    async def pick_option(self, interaction: discord.Interaction):
+        try:
+            self.option_index = int(interaction.data["values"][0])
+        except (KeyError, IndexError, TypeError, ValueError):
+            return
+        await self._refresh(interaction)
+
+    async def pick_emoji(self, interaction: discord.Interaction):
+        option = self.current_option()
+        if option is None:
+            await interaction.response.edit_message(content="That option is gone.", view=None)
+            return
+        try:
+            emoji_id = int(interaction.data["values"][0])
+        except (KeyError, IndexError, TypeError, ValueError):
+            return
+        guild = self.builder.ctx.guild
+        emoji = discord.utils.get(getattr(guild, "emojis", []) or [], id=emoji_id)
+        if emoji is None:
+            await interaction.response.send_message(
+                "I can't find that emoji anymore.", ephemeral=True
+            )
+            return
+        option["emoji"] = str(emoji)
+        await self._refresh(interaction, f"{TICK} Set emoji to {emoji}.")
+
+    async def type_normal(self, interaction: discord.Interaction):
+        option = self.current_option()
+        if option is None:
+            await interaction.response.send_message(
+                "That option is gone.", ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(
+            NormalOptionEmojiModal(self.builder, option, view=self)
+        )
+
+    async def clear_emoji(self, interaction: discord.Interaction):
+        option = self.current_option()
+        if option is None:
+            await interaction.response.edit_message(content="That option is gone.", view=None)
+            return
+        option["emoji"] = None
+        await self._refresh(interaction, f"{TICK} Cleared the emoji.")
+
+    async def close(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(view=None)
+
+
 class SaveNameModal(_BuilderModal):
     def __init__(self, builder: "CV2Builder"):
         super().__init__(builder, title="Save Components V2 layout")
@@ -1141,6 +1390,12 @@ class BlockActionsView(ui.View):
             )
             menu_actions.callback = self.menu_actions
             self.add_item(menu_actions)
+
+            option_emoji = ui.Button(
+                label="Option emoji", style=discord.ButtonStyle.secondary
+            )
+            option_emoji.callback = self.option_emoji
+            self.add_item(option_emoji)
 
         remove = ui.Button(label="Remove", style=discord.ButtonStyle.danger)
         remove.callback = self.remove_block
@@ -1236,6 +1491,19 @@ class BlockActionsView(ui.View):
         await interaction.response.send_message(
             "Pick an option to choose what happens when it is selected.",
             view=MenuOptionsView(self.builder, self.index),
+            ephemeral=True,
+        )
+
+    async def option_emoji(self, interaction: discord.Interaction):
+        options = self.builder.data["blocks"][self.index].get("options") or []
+        if not options:
+            await interaction.response.send_message(
+                "That menu has no options yet.", ephemeral=True
+            )
+            return
+        await interaction.response.send_message(
+            "Pick an option, then choose an emoji for it.",
+            view=OptionEmojiView(self.builder, self.index),
             ephemeral=True,
         )
 
