@@ -8,7 +8,9 @@ The rules implemented here follow Discord's interaction model:
 * successful side effects are kept (there is no rollback);
 * the final summary is private and only lists changes that really happened;
 * role changes always get a private confirmation line, even when the action's
-  own messages are silenced.
+  own messages are silenced, naming only the roles that really changed;
+  nothing changed still confirms with "Roles updated successfully.", and a
+  removal that removed nothing says "Role removed: none".
 """
 
 from __future__ import annotations
@@ -74,16 +76,16 @@ async def _run_role_action(
         try:
             if action["type"] == "role_add":
                 if has_role:
-                    notes.append(f"You already have {role.mention}.")
-                else:
-                    await member.add_roles(role, reason="Components V2 button")
-                    added.append(role.mention)
+                    # Already held: not listed in the summary.
+                    continue
+                await member.add_roles(role, reason="Components V2 button")
+                added.append(role.mention)
             elif action["type"] == "role_remove":
                 if not has_role:
-                    notes.append(f"You don't have {role.mention}.")
-                else:
-                    await member.remove_roles(role, reason="Components V2 button")
-                    removed.append(role.mention)
+                    # Not held: not listed in the summary.
+                    continue
+                await member.remove_roles(role, reason="Components V2 button")
+                removed.append(role.mention)
             else:  # role_toggle
                 if has_role:
                     await member.remove_roles(role, reason="Components V2 button")
@@ -141,11 +143,15 @@ async def execute_actions(
     removed: list[str] = []
     notes: list[str] = []
     errors: list[str] = []
+    role_actions = 0
+    role_remove_seen = False
 
     for action in actions:
         kind = action["type"]
         try:
             if kind in ROLE_ACTION_TYPES:
+                role_actions += 1
+                role_remove_seen = role_remove_seen or kind == "role_remove"
                 await _run_role_action(interaction, action, added, removed, errors, notes)
 
             elif kind == "dm":
@@ -181,21 +187,26 @@ async def execute_actions(
     lines: list[str] = []
     if heading:
         lines.append(heading)
+    # Only roles that really changed are named: a removal from a member who
+    # doesn't hold most of the configured roles lists just the ones removed.
     if added:
-        lines.append("Your roles have been updated.")
-        lines.append("**ROLE ADDED:** " + ", ".join(added))
+        lines.append("Role added: " + ", ".join(added))
     if removed:
-        if not added:
-            lines.append("Your roles have been updated.")
-        lines.append("**ROLE REMOVED:** " + ", ".join(removed))
+        lines.append("Role removed: " + ", ".join(removed))
+    elif role_remove_seen and not added:
+        lines.append("Role removed: none")
     if notes:
         lines.extend(notes)
     if errors:
         lines.append("**I couldn't complete everything:**")
         lines.append(_bullets(errors))
 
+    # A role action that changed nothing still confirms it ran.
+    if not lines and role_actions:
+        lines.append("Roles updated successfully.")
+
     if not lines:
-        lines.append("Nothing to do.")
+        return
 
     await interaction.followup.send(_clip("\n".join(lines)), ephemeral=True)
 
