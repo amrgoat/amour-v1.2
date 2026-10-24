@@ -25,6 +25,24 @@ ch = _env("SUPPORT_CHANNEL")
 
 CMD_WEBHOOK_URL = os.getenv("CMD_WEBHOOK_URL")
 
+# Optional command-log webhook. Logging stays off unless this is a real Discord
+# webhook URL: an empty or half-pasted value used to raise "Invalid webhook URL
+# given." on every command.
+_CMD_WEBHOOK_PREFIXES = (
+    "https://discord.com/api/webhooks/",
+    "https://ptb.discord.com/api/webhooks/",
+    "https://canary.discord.com/api/webhooks/",
+    "https://discordapp.com/api/webhooks/",
+)
+
+
+def command_log_webhook_url() -> str | None:
+    """The configured command-log webhook, or ``None`` when it is unusable."""
+    url = (CMD_WEBHOOK_URL or "").strip()
+    if not url.lower().startswith(_CMD_WEBHOOK_PREFIXES):
+        return None
+    return url
+
 
 # ── Owner / Staff IDs ─────────────────────────────────────────────────────────
 # Set OWNER_IDS in .env — comma-separated Discord user IDs, no spaces needed.

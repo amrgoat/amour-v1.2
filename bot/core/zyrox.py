@@ -86,7 +86,12 @@ class zyrox(commands.AutoShardedBot):
 
         current = self.status_list[self.status_index % len(self.status_list)]
         # This task only changes the activity, not the online status (dnd, idle, etc.)
-        await self.change_presence(activity=discord.Activity(type=current[0], name=current[1]))
+        try:
+            await self.change_presence(activity=discord.Activity(type=current[0], name=current[1]))
+        except (discord.ConnectionClosed, discord.HTTPException, aiohttp.ClientError):
+            # A gateway reconnect can close the socket mid-send; leave the
+            # rotation where it is and try the same status on the next tick.
+            return
         self.status_index += 1
 
     async def send_raw(self, channel_id: int, content: str, **kwargs) -> typing.Optional[discord.Message]:

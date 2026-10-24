@@ -135,34 +135,40 @@ async def on_command_completion(context: commands.Context) -> None:
     if context.author.id in OWNER_IDS:
         return
 
+    # Optional: command logging is off unless a real webhook URL is configured,
+    # so an unset or broken CMD_WEBHOOK_URL cannot raise here on every command.
+    webhook_url = command_log_webhook_url()
+    if webhook_url is None:
+        return
+
     full_command_name = context.command.qualified_name
     split = full_command_name.split("\n")
     executed_command = str(split[0])
-    webhook_url = CMD_WEBHOOK_URL
-    async with aiohttp.ClientSession() as session:
-        webhook = discord.Webhook.from_url(webhook_url, session=session)
 
-        embed_color = 0xFF0000
-        embed = discord.Embed(color=embed_color)
-        avatar_url = context.author.display_avatar.url
+    try:
+        async with aiohttp.ClientSession() as session:
+            webhook = discord.Webhook.from_url(webhook_url, session=session)
 
-        embed.set_author(name=f"Cmd Executed: {executed_command}", icon_url=avatar_url)
-        embed.set_thumbnail(url=avatar_url)
+            embed_color = 0xFF0000
+            embed = discord.Embed(color=embed_color)
+            avatar_url = context.author.display_avatar.url
 
-        if context.guild is not None:
-            embed.add_field(name="User", value=f"{context.author.mention} (`{context.author.id}`)", inline=False)
-            embed.add_field(name="Server", value=f"{context.guild.name} (`{context.guild.id}`)", inline=False)
-            embed.add_field(name="Channel", value=f"{context.channel.mention} (`{context.channel.id}`)", inline=False)
-        else:
-            embed.add_field(name="User (DM)", value=f"{context.author.mention} (`{context.author.id}`)", inline=False)
-        
-        embed.timestamp = discord.utils.utcnow()
-        embed.set_footer(text=f"{BRAND_NAME} Development™ ❤️", icon_url=client.user.display_avatar.url)
-        
-        try:
+            embed.set_author(name=f"Cmd Executed: {executed_command}", icon_url=avatar_url)
+            embed.set_thumbnail(url=avatar_url)
+
+            if context.guild is not None:
+                embed.add_field(name="User", value=f"{context.author.mention} (`{context.author.id}`)", inline=False)
+                embed.add_field(name="Server", value=f"{context.guild.name} (`{context.guild.id}`)", inline=False)
+                embed.add_field(name="Channel", value=f"{context.channel.mention} (`{context.channel.id}`)", inline=False)
+            else:
+                embed.add_field(name="User (DM)", value=f"{context.author.mention} (`{context.author.id}`)", inline=False)
+
+            embed.timestamp = discord.utils.utcnow()
+            embed.set_footer(text=f"{BRAND_NAME} Development™ ❤️", icon_url=client.user.display_avatar.url)
+
             await webhook.send(embed=embed)
-        except Exception as e:
-            print(f'Command log webhook failed: {e}')
+    except Exception as e:
+        print(f'Command log webhook failed: {e}')
 
 
 # --- Utility Commands ---
