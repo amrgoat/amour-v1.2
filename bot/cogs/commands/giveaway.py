@@ -51,17 +51,25 @@ def giveaway_manager_check():
     return commands.check(predicate)
 
 
+# Discord renders the ``<t:…>`` timestamps in the description in each viewer's
+# own timezone, but an embed footer is plain text and is never translated. The
+# rest of the bot prints times on IST (see ``utc_to_ist``), so the footer uses
+# that same clock and says so, instead of quietly showing UTC and disagreeing
+# with the timestamp right above it.
+IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+
+
 def _footer_time(timestamp: float) -> str:
-    """Human readable end time for the footer.
+    """Human readable end time for the footer, on the IST clock.
 
     Discord renders ``<t:…>`` timestamps in message text, but not inside an
     embed footer, so the footer gets a plain date/time instead.
     """
-    moment = datetime.datetime.fromtimestamp(float(timestamp), datetime.timezone.utc)
+    moment = datetime.datetime.fromtimestamp(float(timestamp), IST)
     clock = moment.strftime("%I:%M %p").lstrip("0")
-    if moment.date() == datetime.datetime.now(datetime.timezone.utc).date():
-        return f"Today at {clock}"
-    return moment.strftime("%b %d, %Y at ") + clock
+    if moment.date() == datetime.datetime.now(IST).date():
+        return f"Today at {clock} IST"
+    return moment.strftime("%b %d, %Y at ") + clock + " IST"
 
 
 def giveaway_message(guild, prize, winners_text, ends_at, host_id, *, ended: bool):

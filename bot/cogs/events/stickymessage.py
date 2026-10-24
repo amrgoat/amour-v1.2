@@ -11,14 +11,21 @@ class StickyMessageListener(commands.Cog):
         self.bot = bot
         self.processing_channels = set()
         self.last_processed = {}
+        # Ids of the sticky messages this cog posted. A message with one of
+        # these ids is skipped, so a repost can never trigger itself.
+        self.sticky_message_ids = set()
 
     @commands.Cog.listener()
     async def on_message(self, message):
 
-        if message.author.bot:
+        if not hasattr(message, "guild") or message.guild is None:
             return
 
-        if not hasattr(message, "guild") or message.guild is None:
+        # Never react to a sticky this cog posted, or it would repost itself
+        # forever. While it is being sent the channel is in
+        # `processing_channels`; its id is remembered before the next await, so
+        # both the in-flight and the late MESSAGE_CREATE are covered.
+        if message.id in self.sticky_message_ids:
             return
 
         if message.channel.id in self.processing_channels:
@@ -39,58 +46,80 @@ class StickyMessageListener(commands.Cog):
 
         (
             sticky_id, msg_type, msg_content, embed_data, last_msg_id,
-            enabled, delay_seconds, auto_delete_after, ignore_bots,
+            enabled, delay_seconds, auto_delete_after, _ignore_bots,
             ignore_commands, trigger_count, current_count
         ) = sticky_data
 
-        if ignore_bots and message.author.bot:
-            return
-
+        # Bot messages never advance the counter (see below), so the saved
+        # `ignore_bots` flag no longer gates them: they still move the sticky
+        # back to the bottom of the channel.
         if ignore_commands and message.content.startswith(await self.get_prefix(message)):
             return
 
         self.processing_channels.add(message.channel.id)
 
         try:
-            new_count = current_count + 1
-
-            if new_count >= trigger_count:
-                await self.update_counter(message.guild.id, message.channel.id, 0)
-
-                if last_msg_id:
-                    try:
-                        old_message = await message.channel.fetch_message(last_msg_id)
-                        await old_message.delete()
-                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                        pass
-
-                await asyncio.sleep(delay_seconds)
-
-                new_sticky_msg = await self.send_sticky_message(
-                    message.channel, msg_type, msg_content, embed_data,
-                    author=message.author, guild=message.guild
+            if message.author.bot:
+                # Bot messages do not count towards the trigger, but the sticky
+                # is still re-sent under them so it stays the last message.
+                await self.repost_sticky(
+                    message, last_msg_id, msg_type, msg_content, embed_data,
+                    delay_seconds, auto_delete_after
                 )
-
-                if new_sticky_msg:
-                    async with aiosqlite.connect("db/stickymessages.db") as db:
-                        await db.execute("""
-                            UPDATE sticky_messages 
-                            SET last_message_id = ?
-                            WHERE guild_id = ? AND channel_id = ?
-                        """, (new_sticky_msg.id, message.guild.id, message.channel.id))
-                        await db.commit()
-
-                    if auto_delete_after > 0:
-                        asyncio.create_task(
-                            self.auto_delete_message(new_sticky_msg, auto_delete_after)
-                        )
             else:
-                await self.update_counter(message.guild.id, message.channel.id, new_count)
+                new_count = current_count + 1
+
+                if new_count >= trigger_count:
+                    await self.update_counter(message.guild.id, message.channel.id, 0)
+                    await self.repost_sticky(
+                        message, last_msg_id, msg_type, msg_content, embed_data,
+                        delay_seconds, auto_delete_after
+                    )
+                else:
+                    await self.update_counter(message.guild.id, message.channel.id, new_count)
 
         except Exception:
             pass
         finally:
             self.processing_channels.discard(message.channel.id)
+
+    async def repost_sticky(self, message, last_msg_id, msg_type, msg_content,
+                            embed_data, delay_seconds, auto_delete_after):
+        """Delete the previous sticky and post a fresh one at the bottom."""
+        if last_msg_id:
+            try:
+                old_message = await message.channel.fetch_message(last_msg_id)
+                await old_message.delete()
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+
+        await asyncio.sleep(delay_seconds)
+
+        new_sticky_msg = await self.send_sticky_message(
+            message.channel, msg_type, msg_content, embed_data,
+            author=message.author, guild=message.guild
+        )
+        if not new_sticky_msg:
+            return
+
+        # Remember the id before the next await: the gateway event for this
+        # message must never pass the guard at the top of `on_message`.
+        if len(self.sticky_message_ids) > 500:
+            self.sticky_message_ids.clear()
+        self.sticky_message_ids.add(new_sticky_msg.id)
+
+        async with aiosqlite.connect("db/stickymessages.db") as db:
+            await db.execute("""
+                UPDATE sticky_messages
+                SET last_message_id = ?
+                WHERE guild_id = ? AND channel_id = ?
+            """, (new_sticky_msg.id, message.guild.id, message.channel.id))
+            await db.commit()
+
+        if auto_delete_after > 0:
+            asyncio.create_task(
+                self.auto_delete_message(new_sticky_msg, auto_delete_after)
+            )
 
     async def get_prefix(self, message):
         try:
@@ -107,7 +136,7 @@ class StickyMessageListener(commands.Cog):
     async def update_counter(self, guild_id, channel_id, new_count):
         async with aiosqlite.connect("db/stickymessages.db") as db:
             await db.execute("""
-                UPDATE sticky_messages 
+                UPDATE sticky_messages
                 SET current_count = ?
                 WHERE guild_id = ? AND channel_id = ?
             """, (new_count, guild_id, channel_id))
